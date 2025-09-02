@@ -233,7 +233,72 @@ def register_user(username, email, password):
     
     try:
         # Check if username already exists (case insensitive)
-        existing_username = users_collection.find_one({'username': {'$regex': f'^{username}
+        existing_username = users_collection.find_one({'username': {'$regex': f'^{username}$', '$options': 'i'}})
+        if existing_username:
+            return jsonify({
+                'success': False,
+                'message': 'Username already exists'
+            }), 409
+        
+        # Check if email already exists (case insensitive)
+        existing_email = users_collection.find_one({'email': {'$regex': f'^{email}$', '$options': 'i'}})
+        if existing_email:
+            return jsonify({
+                'success': False,
+                'message': 'Email already registered'
+            }), 409
+        
+        # Generate verification code
+        verification_code = generate_verification_code()
+        
+        # Create user document (initially unverified)
+        hashed_password = generate_password_hash(password)
+        user_doc = {
+            'username': username,
+            'email': email,
+            'password': hashed_password,
+            'verified': False,
+            'created_at': datetime.utcnow()
+        }
+        
+        # Insert user into database
+        result = users_collection.insert_one(user_doc)
+        
+        # Store verification code
+        verification_doc = {
+            'username': username,
+            'email': email,
+            'code': verification_code,
+            'created_at': datetime.utcnow(),
+            'expires_at': datetime.utcnow() + timedelta(minutes=10)
+        }
+        verification_collection.insert_one(verification_doc)
+        
+        # Send verification email
+        email_sent = send_verification_email(email, username, verification_code)
+        
+        if not email_sent:
+            # If email fails, remove the user and verification code
+            users_collection.delete_one({'_id': result.inserted_id})
+            verification_collection.delete_one({'username': username})
+            return jsonify({
+                'success': False,
+                'message': 'Failed to send verification email. Please try again.'
+            }), 500
+        
+        return jsonify({
+            'success': True,
+            'message': 'User registered successfully. Please check your email for verification code.',
+            'username': username,
+            'user_id': str(result.inserted_id),
+            'verification_required': True
+        }), 201
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': f'Registration failed: {str(e)}'
+        }), 500
 
 @app.route('/verify/<username>/<code>', methods=['POST'])
 def verify_user(username, code):
@@ -349,144 +414,6 @@ def resend_verification(username):
             'success': False,
             'message': f'Failed to resend verification: {str(e)}'
         }), 500
-@app.route('/<username>', methods=['GET', 'POST', 'PUT', 'DELETE'])
-def handle_user_data(username):
-    """Handle JSON data storage and retrieval for users"""
-    if not db:
-        return jsonify({'error': 'Database connection failed'}), 500
-    
-    try:
-        # Check if user exists and is verified
-        user = users_collection.find_one({'username': {'$regex': f'^{username}
-
-@app.route('/users', methods=['GET'])
-def list_users():
-    """List all registered users (without sensitive info)"""
-    if not db:
-        return jsonify({'error': 'Database connection failed'}), 500
-    
-    try:
-        users_cursor = users_collection.find({}, {'password': 0})  # Exclude password field
-        user_list = []
-        
-        for user in users_cursor:
-            user_list.append({
-                'username': user['username'],
-                'email': user['email'],
-                'created_at': user.get('created_at', 'Unknown'),
-                'user_id': str(user['_id'])
-            })
-        
-        return jsonify({
-            'users': user_list,
-            'total': len(user_list)
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'error': f'Failed to retrieve users: {str(e)}'
-        }), 500
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    db_status = 'connected' if db else 'disconnected'
-    
-    db_info = {}
-    if db:
-        try:
-            # Get database stats
-            user_count = users_collection.count_documents({})
-            data_count = user_data_collection.count_documents({})
-            db_info = {
-                'users_count': user_count,
-                'user_data_count': data_count
-            }
-        except:
-            db_info = {'error': 'Could not retrieve stats'}
-    
-    return jsonify({
-        'status': 'healthy',
-        'database': db_status,
-        'timestamp': datetime.utcnow().isoformat(),
-        'database_info': db_info
-    })
-
-@app.route('/stats', methods=['GET'])
-def get_stats():
-    """Get database statistics"""
-    if not db:
-        return jsonify({'error': 'Database connection failed'}), 500
-    
-    try:
-        stats = {
-            'total_users': users_collection.count_documents({}),
-            'total_user_data_records': user_data_collection.count_documents({}),
-            'users_with_data': user_data_collection.count_documents({'data': {'$ne': {}}}),
-            'recent_registrations': users_collection.count_documents({
-                'created_at': {'$gte': datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)}
-            })
-        }
-        
-        return jsonify(stats)
-        
-    except Exception as e:
-        return jsonify({
-            'error': f'Failed to retrieve stats: {str(e)}'
-        }), 500
-
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({
-        'error': 'Endpoint not found'
-    }), 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    return jsonify({
-        'error': 'Internal server error'
-    }), 500
-
-if __name__ == '__main__':
-    print("Starting Flask backend with MongoDB...")
-    print(f"Database Status: {'✓ Connected' if db else '✗ Disconnected'}")
-    print(f"MongoDB Config:")
-    print(f"  Username: {MONGO_USERNAME}")
-    print(f"  Database: {MONGO_DATABASE}")
-    print(f"  Cluster: {MONGO_CLUSTER}")
-    print(f"  Password: {'✓ Set' if MONGO_PASSWORD else '✗ Not Set'}")
-    print(f"Email Config:")
-    print(f"  SMTP Server: {SMTP_SERVER}")
-    print(f"  Sender Email: {SENDER_EMAIL}")
-    print(f"  Email Password: {'✓ Set' if SENDER_PASSWORD else '✗ Not Set'}")
-    print("\nAvailable endpoints:")
-    print("- GET  /usernamecheck/<username>")
-    print("- POST /registeruser/<username>/<email>/<password>")
-    print("- POST /verify/<username>/<code>")
-    print("- POST /resend-verification/<username>")
-    print("- GET  /<username> (get user data)")
-    print("- POST /<username> (save user data)")
-    print("- PUT  /<username> (update user data)")
-    print("- DELETE /<username> (clear user data)")
-    print("- GET  /users (list all users)")
-    print("- GET  /health (health check)")
-    print("- GET  /stats (database statistics)")
-    print(f"\nServer starting on http://0.0.0.0:5000")
-    if MONGO_PASSWORD == 'your_password_here':
-        print("\n⚠️  WARNING: Please set your MongoDB environment variables!")
-        print("   Set MONGO_PASSWORD at minimum, or all variables for custom config.")
-    
-    app.run(debug=True, host='0.0.0.0', port=5000)
-    
-    app.run(debug=True, host='0.0.0.0', port=5000), '$options': 'i'}})
-        if existing_username:
-            return jsonify({
-                'success': False,
-                'message': 'Username already exists'
-            }), 409
-        
-        # Check if email already exists (case insensitive)
-        existing_email = users_collection.find_one({'email': {'$regex': f'^{email}
 
 @app.route('/<username>', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def handle_user_data(username):
@@ -497,437 +424,6 @@ def handle_user_data(username):
     try:
         # Check if user exists (case insensitive)
         user = users_collection.find_one({'username': {'$regex': f'^{username}$', '$options': 'i'}})
-        if not user:
-            return jsonify({
-                'error': 'User not found'
-            }), 404
-        
-        # Get the actual username from database (preserving case)
-        actual_username = user['username']
-        
-        if request.method == 'GET':
-            # Return user's data
-            user_data_doc = user_data_collection.find_one({'username': actual_username})
-            data = user_data_doc['data'] if user_data_doc else {}
-            
-            return jsonify({
-                'username': actual_username,
-                'data': data
-            })
-        
-        elif request.method in ['POST', 'PUT']:
-            # Store/update user's data
-            json_data = request.get_json()
-            
-            if json_data is None:
-                return jsonify({
-                    'error': 'No JSON data provided'
-                }), 400
-            
-            # Update or create user data document
-            user_data_collection.update_one(
-                {'username': actual_username},
-                {
-                    '$set': {
-                        'data': json_data,
-                        'updated_at': datetime.utcnow()
-                    }
-                },
-                upsert=True
-            )
-            
-            return jsonify({
-                'success': True,
-                'message': 'Data saved successfully',
-                'username': actual_username
-            })
-        
-        elif request.method == 'DELETE':
-            # Clear user's data
-            user_data_collection.update_one(
-                {'username': actual_username},
-                {
-                    '$set': {
-                        'data': {},
-                        'updated_at': datetime.utcnow()
-                    }
-                }
-            )
-            
-            return jsonify({
-                'success': True,
-                'message': 'User data cleared',
-                'username': actual_username
-            })
-            
-    except Exception as e:
-        return jsonify({
-            'error': f'Database operation failed: {str(e)}'
-        }), 500
-
-@app.route('/users', methods=['GET'])
-def list_users():
-    """List all registered users (without sensitive info)"""
-    if not db:
-        return jsonify({'error': 'Database connection failed'}), 500
-    
-    try:
-        users_cursor = users_collection.find({}, {'password': 0})  # Exclude password field
-        user_list = []
-        
-        for user in users_cursor:
-            user_list.append({
-                'username': user['username'],
-                'email': user['email'],
-                'created_at': user.get('created_at', 'Unknown'),
-                'user_id': str(user['_id'])
-            })
-        
-        return jsonify({
-            'users': user_list,
-            'total': len(user_list)
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'error': f'Failed to retrieve users: {str(e)}'
-        }), 500
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    db_status = 'connected' if db else 'disconnected'
-    
-    db_info = {}
-    if db:
-        try:
-            # Get database stats
-            user_count = users_collection.count_documents({})
-            data_count = user_data_collection.count_documents({})
-            db_info = {
-                'users_count': user_count,
-                'user_data_count': data_count
-            }
-        except:
-            db_info = {'error': 'Could not retrieve stats'}
-    
-    return jsonify({
-        'status': 'healthy',
-        'database': db_status,
-        'timestamp': datetime.utcnow().isoformat(),
-        'database_info': db_info
-    })
-
-@app.route('/stats', methods=['GET'])
-def get_stats():
-    """Get database statistics"""
-    if not db:
-        return jsonify({'error': 'Database connection failed'}), 500
-    
-    try:
-        stats = {
-            'total_users': users_collection.count_documents({}),
-            'total_user_data_records': user_data_collection.count_documents({}),
-            'users_with_data': user_data_collection.count_documents({'data': {'$ne': {}}}),
-            'recent_registrations': users_collection.count_documents({
-                'created_at': {'$gte': datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)}
-            })
-        }
-        
-        return jsonify(stats)
-        
-    except Exception as e:
-        return jsonify({
-            'error': f'Failed to retrieve stats: {str(e)}'
-        }), 500
-
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({
-        'error': 'Endpoint not found'
-    }), 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    return jsonify({
-        'error': 'Internal server error'
-    }), 500
-
-if __name__ == '__main__':
-    print("Starting Flask backend with MongoDB...")
-    print(f"Database Status: {'✓ Connected' if db else '✗ Disconnected'}")
-    print(f"MongoDB Config:")
-    print(f"  Username: {MONGO_USERNAME}")
-    print(f"  Database: {MONGO_DATABASE}")
-    print(f"  Cluster: {MONGO_CLUSTER}")
-    print(f"  Password: {'✓ Set' if MONGO_PASSWORD != 'your_password_here' else '✗ Not Set'}")
-    print("\nAvailable endpoints:")
-    print("- GET  /usernamecheck/<username>")
-    print("- POST /registeruser/<username>/<email>/<password>")
-    print("- GET  /<username> (get user data)")
-    print("- POST /<username> (save user data)")
-    print("- PUT  /<username> (update user data)")
-    print("- DELETE /<username> (clear user data)")
-    print("- GET  /users (list all users)")
-    print("- GET  /health (health check)")
-    print("- GET  /stats (database statistics)")
-    print(f"\nServer starting on http://0.0.0.0:5000")
-    if MONGO_PASSWORD == 'your_password_here':
-        print("\n⚠️  WARNING: Please set your MongoDB environment variables!")
-        print("   Set MONGO_PASSWORD at minimum, or all variables for custom config.")
-    
-    app.run(debug=True, host='0.0.0.0', port=5000)
-    
-    app.run(debug=True, host='0.0.0.0', port=5000), '$options': 'i'}})
-        if existing_email:
-            return jsonify({
-                'success': False,
-                'message': 'Email already registered'
-            }), 409
-        
-        # Generate verification code
-        verification_code = generate_verification_code()
-        
-        # Create user document (initially unverified)
-        hashed_password = generate_password_hash(password)
-        user_doc = {
-            'username': username,
-            'email': email,
-            'password': hashed_password,
-            'verified': False,
-            'created_at': datetime.utcnow()
-        }
-        
-        # Insert user into database
-        result = users_collection.insert_one(user_doc)
-        
-        # Store verification code
-        verification_doc = {
-            'username': username,
-            'email': email,
-            'code': verification_code,
-            'created_at': datetime.utcnow(),
-            'expires_at': datetime.utcnow() + timedelta(minutes=10)
-        }
-        verification_collection.insert_one(verification_doc)
-        
-        # Send verification email
-        email_sent = send_verification_email(email, username, verification_code)
-        
-        if not email_sent:
-            # If email fails, remove the user and verification code
-            users_collection.delete_one({'_id': result.inserted_id})
-            verification_collection.delete_one({'username': username})
-            return jsonify({
-                'success': False,
-                'message': 'Failed to send verification email. Please try again.'
-            }), 500
-        
-        return jsonify({
-            'success': True,
-            'message': 'User registered successfully. Please check your email for verification code.',
-            'username': username,
-            'user_id': str(result.inserted_id),
-            'verification_required': True
-        }), 201
-        
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'Registration failed: {str(e)}'
-        }), 500
-
-@app.route('/<username>', methods=['GET', 'POST', 'PUT', 'DELETE'])
-def handle_user_data(username):
-    """Handle JSON data storage and retrieval for users"""
-    if not db:
-        return jsonify({'error': 'Database connection failed'}), 500
-    
-    try:
-        # Check if user exists (case insensitive)
-        user = users_collection.find_one({'username': {'$regex': f'^{username}$', '$options': 'i'}})
-        if not user:
-            return jsonify({
-                'error': 'User not found'
-            }), 404
-        
-        # Get the actual username from database (preserving case)
-        actual_username = user['username']
-        
-        if request.method == 'GET':
-            # Return user's data
-            user_data_doc = user_data_collection.find_one({'username': actual_username})
-            data = user_data_doc['data'] if user_data_doc else {}
-            
-            return jsonify({
-                'username': actual_username,
-                'data': data
-            })
-        
-        elif request.method in ['POST', 'PUT']:
-            # Store/update user's data
-            json_data = request.get_json()
-            
-            if json_data is None:
-                return jsonify({
-                    'error': 'No JSON data provided'
-                }), 400
-            
-            # Update or create user data document
-            user_data_collection.update_one(
-                {'username': actual_username},
-                {
-                    '$set': {
-                        'data': json_data,
-                        'updated_at': datetime.utcnow()
-                    }
-                },
-                upsert=True
-            )
-            
-            return jsonify({
-                'success': True,
-                'message': 'Data saved successfully',
-                'username': actual_username
-            })
-        
-        elif request.method == 'DELETE':
-            # Clear user's data
-            user_data_collection.update_one(
-                {'username': actual_username},
-                {
-                    '$set': {
-                        'data': {},
-                        'updated_at': datetime.utcnow()
-                    }
-                }
-            )
-            
-            return jsonify({
-                'success': True,
-                'message': 'User data cleared',
-                'username': actual_username
-            })
-            
-    except Exception as e:
-        return jsonify({
-            'error': f'Database operation failed: {str(e)}'
-        }), 500
-
-@app.route('/users', methods=['GET'])
-def list_users():
-    """List all registered users (without sensitive info)"""
-    if not db:
-        return jsonify({'error': 'Database connection failed'}), 500
-    
-    try:
-        users_cursor = users_collection.find({}, {'password': 0})  # Exclude password field
-        user_list = []
-        
-        for user in users_cursor:
-            user_list.append({
-                'username': user['username'],
-                'email': user['email'],
-                'created_at': user.get('created_at', 'Unknown'),
-                'user_id': str(user['_id'])
-            })
-        
-        return jsonify({
-            'users': user_list,
-            'total': len(user_list)
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'error': f'Failed to retrieve users: {str(e)}'
-        }), 500
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    db_status = 'connected' if db else 'disconnected'
-    
-    db_info = {}
-    if db:
-        try:
-            # Get database stats
-            user_count = users_collection.count_documents({})
-            data_count = user_data_collection.count_documents({})
-            db_info = {
-                'users_count': user_count,
-                'user_data_count': data_count
-            }
-        except:
-            db_info = {'error': 'Could not retrieve stats'}
-    
-    return jsonify({
-        'status': 'healthy',
-        'database': db_status,
-        'timestamp': datetime.utcnow().isoformat(),
-        'database_info': db_info
-    })
-
-@app.route('/stats', methods=['GET'])
-def get_stats():
-    """Get database statistics"""
-    if not db:
-        return jsonify({'error': 'Database connection failed'}), 500
-    
-    try:
-        stats = {
-            'total_users': users_collection.count_documents({}),
-            'total_user_data_records': user_data_collection.count_documents({}),
-            'users_with_data': user_data_collection.count_documents({'data': {'$ne': {}}}),
-            'recent_registrations': users_collection.count_documents({
-                'created_at': {'$gte': datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)}
-            })
-        }
-        
-        return jsonify(stats)
-        
-    except Exception as e:
-        return jsonify({
-            'error': f'Failed to retrieve stats: {str(e)}'
-        }), 500
-
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({
-        'error': 'Endpoint not found'
-    }), 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    return jsonify({
-        'error': 'Internal server error'
-    }), 500
-
-if __name__ == '__main__':
-    print("Starting Flask backend with MongoDB...")
-    print(f"Database Status: {'✓ Connected' if db else '✗ Disconnected'}")
-    print(f"MongoDB Config:")
-    print(f"  Username: {MONGO_USERNAME}")
-    print(f"  Database: {MONGO_DATABASE}")
-    print(f"  Cluster: {MONGO_CLUSTER}")
-    print(f"  Password: {'✓ Set' if MONGO_PASSWORD != 'your_password_here' else '✗ Not Set'}")
-    print("\nAvailable endpoints:")
-    print("- GET  /usernamecheck/<username>")
-    print("- POST /registeruser/<username>/<email>/<password>")
-    print("- GET  /<username> (get user data)")
-    print("- POST /<username> (save user data)")
-    print("- PUT  /<username> (update user data)")
-    print("- DELETE /<username> (clear user data)")
-    print("- GET  /users (list all users)")
-    print("- GET  /health (health check)")
-    print("- GET  /stats (database statistics)")
-    print(f"\nServer starting on http://0.0.0.0:5000")
-    if MONGO_PASSWORD == 'your_password_here':
-        print("\n⚠️  WARNING: Please set your MongoDB environment variables!")
-        print("   Set MONGO_PASSWORD at minimum, or all variables for custom config.")
-    
-    app.run(debug=True, host='0.0.0.0', port=5000)
-    
-    app.run(debug=True, host='0.0.0.0', port=5000), '$options': 'i'}})
         if not user:
             return jsonify({
                 'error': 'User not found'
@@ -1015,6 +511,7 @@ def list_users():
             user_list.append({
                 'username': user['username'],
                 'email': user['email'],
+                'verified': user.get('verified', False),
                 'created_at': user.get('created_at', 'Unknown'),
                 'user_id': str(user['_id'])
             })
@@ -1040,9 +537,11 @@ def health_check():
             # Get database stats
             user_count = users_collection.count_documents({})
             data_count = user_data_collection.count_documents({})
+            verification_count = verification_collection.count_documents({})
             db_info = {
                 'users_count': user_count,
-                'user_data_count': data_count
+                'user_data_count': data_count,
+                'verification_codes_count': verification_count
             }
         except:
             db_info = {'error': 'Could not retrieve stats'}
@@ -1063,8 +562,11 @@ def get_stats():
     try:
         stats = {
             'total_users': users_collection.count_documents({}),
+            'verified_users': users_collection.count_documents({'verified': True}),
+            'unverified_users': users_collection.count_documents({'verified': False}),
             'total_user_data_records': user_data_collection.count_documents({}),
             'users_with_data': user_data_collection.count_documents({'data': {'$ne': {}}}),
+            'pending_verifications': verification_collection.count_documents({}),
             'recent_registrations': users_collection.count_documents({
                 'created_at': {'$gte': datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)}
             })
@@ -1096,10 +598,16 @@ if __name__ == '__main__':
     print(f"  Username: {MONGO_USERNAME}")
     print(f"  Database: {MONGO_DATABASE}")
     print(f"  Cluster: {MONGO_CLUSTER}")
-    print(f"  Password: {'✓ Set' if MONGO_PASSWORD != 'your_password_here' else '✗ Not Set'}")
+    print(f"  Password: {'✓ Set' if MONGO_PASSWORD and MONGO_PASSWORD != 'your_password_here' else '✗ Not Set'}")
+    print(f"Email Config:")
+    print(f"  SMTP Server: {SMTP_SERVER}")
+    print(f"  Sender Email: {SENDER_EMAIL}")
+    print(f"  Email Password: {'✓ Set' if SENDER_PASSWORD else '✗ Not Set'}")
     print("\nAvailable endpoints:")
     print("- GET  /usernamecheck/<username>")
     print("- POST /registeruser/<username>/<email>/<password>")
+    print("- POST /verify/<username>/<code>")
+    print("- POST /resend-verification/<username>")
     print("- GET  /<username> (get user data)")
     print("- POST /<username> (save user data)")
     print("- PUT  /<username> (update user data)")
@@ -1108,459 +616,8 @@ if __name__ == '__main__':
     print("- GET  /health (health check)")
     print("- GET  /stats (database statistics)")
     print(f"\nServer starting on http://0.0.0.0:5000")
-    if MONGO_PASSWORD == 'your_password_here':
+    if not MONGO_PASSWORD or MONGO_PASSWORD == 'your_password_here':
         print("\n⚠️  WARNING: Please set your MongoDB environment variables!")
         print("   Set MONGO_PASSWORD at minimum, or all variables for custom config.")
-    
-    app.run(debug=True, host='0.0.0.0', port=5000)
-    
-    app.run(debug=True, host='0.0.0.0', port=5000), '$options': 'i'}})
-        if existing_username:
-            return jsonify({
-                'success': False,
-                'message': 'Username already exists'
-            }), 409
-        
-        # Check if email already exists (case insensitive)
-        existing_email = users_collection.find_one({'email': {'$regex': f'^{email}
-
-@app.route('/<username>', methods=['GET', 'POST', 'PUT', 'DELETE'])
-def handle_user_data(username):
-    """Handle JSON data storage and retrieval for users"""
-    if not db:
-        return jsonify({'error': 'Database connection failed'}), 500
-    
-    try:
-        # Check if user exists (case insensitive)
-        user = users_collection.find_one({'username': {'$regex': f'^{username}$', '$options': 'i'}})
-        if not user:
-            return jsonify({
-                'error': 'User not found'
-            }), 404
-        
-        # Get the actual username from database (preserving case)
-        actual_username = user['username']
-        
-        if request.method == 'GET':
-            # Return user's data
-            user_data_doc = user_data_collection.find_one({'username': actual_username})
-            data = user_data_doc['data'] if user_data_doc else {}
-            
-            return jsonify({
-                'username': actual_username,
-                'data': data
-            })
-        
-        elif request.method in ['POST', 'PUT']:
-            # Store/update user's data
-            json_data = request.get_json()
-            
-            if json_data is None:
-                return jsonify({
-                    'error': 'No JSON data provided'
-                }), 400
-            
-            # Update or create user data document
-            user_data_collection.update_one(
-                {'username': actual_username},
-                {
-                    '$set': {
-                        'data': json_data,
-                        'updated_at': datetime.utcnow()
-                    }
-                },
-                upsert=True
-            )
-            
-            return jsonify({
-                'success': True,
-                'message': 'Data saved successfully',
-                'username': actual_username
-            })
-        
-        elif request.method == 'DELETE':
-            # Clear user's data
-            user_data_collection.update_one(
-                {'username': actual_username},
-                {
-                    '$set': {
-                        'data': {},
-                        'updated_at': datetime.utcnow()
-                    }
-                }
-            )
-            
-            return jsonify({
-                'success': True,
-                'message': 'User data cleared',
-                'username': actual_username
-            })
-            
-    except Exception as e:
-        return jsonify({
-            'error': f'Database operation failed: {str(e)}'
-        }), 500
-
-@app.route('/users', methods=['GET'])
-def list_users():
-    """List all registered users (without sensitive info)"""
-    if not db:
-        return jsonify({'error': 'Database connection failed'}), 500
-    
-    try:
-        users_cursor = users_collection.find({}, {'password': 0})  # Exclude password field
-        user_list = []
-        
-        for user in users_cursor:
-            user_list.append({
-                'username': user['username'],
-                'email': user['email'],
-                'created_at': user.get('created_at', 'Unknown'),
-                'user_id': str(user['_id'])
-            })
-        
-        return jsonify({
-            'users': user_list,
-            'total': len(user_list)
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'error': f'Failed to retrieve users: {str(e)}'
-        }), 500
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    db_status = 'connected' if db else 'disconnected'
-    
-    db_info = {}
-    if db:
-        try:
-            # Get database stats
-            user_count = users_collection.count_documents({})
-            data_count = user_data_collection.count_documents({})
-            db_info = {
-                'users_count': user_count,
-                'user_data_count': data_count
-            }
-        except:
-            db_info = {'error': 'Could not retrieve stats'}
-    
-    return jsonify({
-        'status': 'healthy',
-        'database': db_status,
-        'timestamp': datetime.utcnow().isoformat(),
-        'database_info': db_info
-    })
-
-@app.route('/stats', methods=['GET'])
-def get_stats():
-    """Get database statistics"""
-    if not db:
-        return jsonify({'error': 'Database connection failed'}), 500
-    
-    try:
-        stats = {
-            'total_users': users_collection.count_documents({}),
-            'total_user_data_records': user_data_collection.count_documents({}),
-            'users_with_data': user_data_collection.count_documents({'data': {'$ne': {}}}),
-            'recent_registrations': users_collection.count_documents({
-                'created_at': {'$gte': datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)}
-            })
-        }
-        
-        return jsonify(stats)
-        
-    except Exception as e:
-        return jsonify({
-            'error': f'Failed to retrieve stats: {str(e)}'
-        }), 500
-
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({
-        'error': 'Endpoint not found'
-    }), 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    return jsonify({
-        'error': 'Internal server error'
-    }), 500
-
-if __name__ == '__main__':
-    print("Starting Flask backend with MongoDB...")
-    print(f"Database Status: {'✓ Connected' if db else '✗ Disconnected'}")
-    print(f"MongoDB Config:")
-    print(f"  Username: {MONGO_USERNAME}")
-    print(f"  Database: {MONGO_DATABASE}")
-    print(f"  Cluster: {MONGO_CLUSTER}")
-    print(f"  Password: {'✓ Set' if MONGO_PASSWORD != 'your_password_here' else '✗ Not Set'}")
-    print("\nAvailable endpoints:")
-    print("- GET  /usernamecheck/<username>")
-    print("- POST /registeruser/<username>/<email>/<password>")
-    print("- GET  /<username> (get user data)")
-    print("- POST /<username> (save user data)")
-    print("- PUT  /<username> (update user data)")
-    print("- DELETE /<username> (clear user data)")
-    print("- GET  /users (list all users)")
-    print("- GET  /health (health check)")
-    print("- GET  /stats (database statistics)")
-    print(f"\nServer starting on http://0.0.0.0:5000")
-    if MONGO_PASSWORD == 'your_password_here':
-        print("\n⚠️  WARNING: Please set your MongoDB environment variables!")
-        print("   Set MONGO_PASSWORD at minimum, or all variables for custom config.")
-    
-    app.run(debug=True, host='0.0.0.0', port=5000)
-    
-    app.run(debug=True, host='0.0.0.0', port=5000), '$options': 'i'}})
-        if existing_email:
-            return jsonify({
-                'success': False,
-                'message': 'Email already registered'
-            }), 409
-        
-        # Generate verification code
-        verification_code = generate_verification_code()
-        
-        # Create user document (initially unverified)
-        hashed_password = generate_password_hash(password)
-        user_doc = {
-            'username': username,
-            'email': email,
-            'password': hashed_password,
-            'verified': False,
-            'created_at': datetime.utcnow()
-        }
-        
-        # Insert user into database
-        result = users_collection.insert_one(user_doc)
-        
-        # Store verification code
-        verification_doc = {
-            'username': username,
-            'email': email,
-            'code': verification_code,
-            'created_at': datetime.utcnow(),
-            'expires_at': datetime.utcnow() + timedelta(minutes=10)
-        }
-        verification_collection.insert_one(verification_doc)
-        
-        # Send verification email
-        email_sent = send_verification_email(email, username, verification_code)
-        
-        if not email_sent:
-            # If email fails, remove the user and verification code
-            users_collection.delete_one({'_id': result.inserted_id})
-            verification_collection.delete_one({'username': username})
-            return jsonify({
-                'success': False,
-                'message': 'Failed to send verification email. Please try again.'
-            }), 500
-        
-        return jsonify({
-            'success': True,
-            'message': 'User registered successfully. Please check your email for verification code.',
-            'username': username,
-            'user_id': str(result.inserted_id),
-            'verification_required': True
-        }), 201
-        
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'Registration failed: {str(e)}'
-        }), 500
-
-@app.route('/<username>', methods=['GET', 'POST', 'PUT', 'DELETE'])
-def handle_user_data(username):
-    """Handle JSON data storage and retrieval for users"""
-    if not db:
-        return jsonify({'error': 'Database connection failed'}), 500
-    
-    try:
-        # Check if user exists (case insensitive)
-        user = users_collection.find_one({'username': {'$regex': f'^{username}$', '$options': 'i'}})
-        if not user:
-            return jsonify({
-                'error': 'User not found'
-            }), 404
-        
-        # Get the actual username from database (preserving case)
-        actual_username = user['username']
-        
-        if request.method == 'GET':
-            # Return user's data
-            user_data_doc = user_data_collection.find_one({'username': actual_username})
-            data = user_data_doc['data'] if user_data_doc else {}
-            
-            return jsonify({
-                'username': actual_username,
-                'data': data
-            })
-        
-        elif request.method in ['POST', 'PUT']:
-            # Store/update user's data
-            json_data = request.get_json()
-            
-            if json_data is None:
-                return jsonify({
-                    'error': 'No JSON data provided'
-                }), 400
-            
-            # Update or create user data document
-            user_data_collection.update_one(
-                {'username': actual_username},
-                {
-                    '$set': {
-                        'data': json_data,
-                        'updated_at': datetime.utcnow()
-                    }
-                },
-                upsert=True
-            )
-            
-            return jsonify({
-                'success': True,
-                'message': 'Data saved successfully',
-                'username': actual_username
-            })
-        
-        elif request.method == 'DELETE':
-            # Clear user's data
-            user_data_collection.update_one(
-                {'username': actual_username},
-                {
-                    '$set': {
-                        'data': {},
-                        'updated_at': datetime.utcnow()
-                    }
-                }
-            )
-            
-            return jsonify({
-                'success': True,
-                'message': 'User data cleared',
-                'username': actual_username
-            })
-            
-    except Exception as e:
-        return jsonify({
-            'error': f'Database operation failed: {str(e)}'
-        }), 500
-
-@app.route('/users', methods=['GET'])
-def list_users():
-    """List all registered users (without sensitive info)"""
-    if not db:
-        return jsonify({'error': 'Database connection failed'}), 500
-    
-    try:
-        users_cursor = users_collection.find({}, {'password': 0})  # Exclude password field
-        user_list = []
-        
-        for user in users_cursor:
-            user_list.append({
-                'username': user['username'],
-                'email': user['email'],
-                'created_at': user.get('created_at', 'Unknown'),
-                'user_id': str(user['_id'])
-            })
-        
-        return jsonify({
-            'users': user_list,
-            'total': len(user_list)
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'error': f'Failed to retrieve users: {str(e)}'
-        }), 500
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    db_status = 'connected' if db else 'disconnected'
-    
-    db_info = {}
-    if db:
-        try:
-            # Get database stats
-            user_count = users_collection.count_documents({})
-            data_count = user_data_collection.count_documents({})
-            db_info = {
-                'users_count': user_count,
-                'user_data_count': data_count
-            }
-        except:
-            db_info = {'error': 'Could not retrieve stats'}
-    
-    return jsonify({
-        'status': 'healthy',
-        'database': db_status,
-        'timestamp': datetime.utcnow().isoformat(),
-        'database_info': db_info
-    })
-
-@app.route('/stats', methods=['GET'])
-def get_stats():
-    """Get database statistics"""
-    if not db:
-        return jsonify({'error': 'Database connection failed'}), 500
-    
-    try:
-        stats = {
-            'total_users': users_collection.count_documents({}),
-            'total_user_data_records': user_data_collection.count_documents({}),
-            'users_with_data': user_data_collection.count_documents({'data': {'$ne': {}}}),
-            'recent_registrations': users_collection.count_documents({
-                'created_at': {'$gte': datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)}
-            })
-        }
-        
-        return jsonify(stats)
-        
-    except Exception as e:
-        return jsonify({
-            'error': f'Failed to retrieve stats: {str(e)}'
-        }), 500
-
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({
-        'error': 'Endpoint not found'
-    }), 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    return jsonify({
-        'error': 'Internal server error'
-    }), 500
-
-if __name__ == '__main__':
-    print("Starting Flask backend with MongoDB...")
-    print(f"Database Status: {'✓ Connected' if db else '✗ Disconnected'}")
-    print(f"MongoDB Config:")
-    print(f"  Username: {MONGO_USERNAME}")
-    print(f"  Database: {MONGO_DATABASE}")
-    print(f"  Cluster: {MONGO_CLUSTER}")
-    print(f"  Password: {'✓ Set' if MONGO_PASSWORD != 'your_password_here' else '✗ Not Set'}")
-    print("\nAvailable endpoints:")
-    print("- GET  /usernamecheck/<username>")
-    print("- POST /registeruser/<username>/<email>/<password>")
-    print("- GET  /<username> (get user data)")
-    print("- POST /<username> (save user data)")
-    print("- PUT  /<username> (update user data)")
-    print("- DELETE /<username> (clear user data)")
-    print("- GET  /users (list all users)")
-    print("- GET  /health (health check)")
-    print("- GET  /stats (database statistics)")
-    print(f"\nServer starting on http://0.0.0.0:5000")
-    if MONGO_PASSWORD == 'your_password_here':
-        print("\n⚠️  WARNING: Please set your MongoDB environment variables!")
-        print("   Set MONGO_PASSWORD at minimum, or all variables for custom config.")
-    
-    app.run(debug=True, host='0.0.0.0', port=5000)
     
     app.run(debug=True, host='0.0.0.0', port=5000)
