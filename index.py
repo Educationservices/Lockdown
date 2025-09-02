@@ -198,7 +198,7 @@ def cleanup_expired_data():
         
         time.sleep(60)  # Clean up every minute
 
-# Start background cleanup thread
+# Start bawdqckground cleanup thread
 cleanup_thread = threading.Thread(target=cleanup_expired_data, daemon=True)
 cleanup_thread.start()
 
@@ -1510,7 +1510,7 @@ def data_save():
         return jsonify({'success': True, 'message': 'Data saved successfully'})
         
     except Exception as e:
-        logger.error(f"Data save error: {e")
+        logger.error(f"Data save error: {e}")
         return jsonify({'success': False, 'message': 'Failed to save data'}), 500
 
 # Main route to serve the HTML
