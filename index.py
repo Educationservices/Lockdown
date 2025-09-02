@@ -44,10 +44,12 @@ try:
     print("✓ Connected to MongoDB successfully!")
     print(f"✓ Database: {MONGO_DATABASE}")
     print(f"✓ Cluster: {MONGO_CLUSTER}")
+    db_connected = True
 except Exception as e:
     print(f"✗ MongoDB connection failed: {e}")
     client = None
     db = None
+    db_connected = False
 
 class JSONEncoder(json.JSONEncoder):
     """Custom JSON encoder to handle MongoDB ObjectId"""
@@ -174,7 +176,7 @@ def send_verification_email(email, username, code):
 @app.route('/usernamecheck/<username>', methods=['GET'])
 def check_username(username):
     """Check if username is available"""
-    if not db:
+    if not db_connected:
         return jsonify({'error': 'Database connection failed'}), 500
         
     if not username:
@@ -203,7 +205,7 @@ def check_username(username):
 @app.route('/registeruser/<username>/<email>/<password>', methods=['POST'])
 def register_user(username, email, password):
     """Register a new user and send verification email"""
-    if not db:
+    if not db_connected:
         return jsonify({'error': 'Database connection failed'}), 500
     
     # Validation
@@ -418,7 +420,7 @@ def resend_verification(username):
 @app.route('/<username>', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def handle_user_data(username):
     """Handle JSON data storage and retrieval for users"""
-    if not db:
+    if not db_connected:
         return jsonify({'error': 'Database connection failed'}), 500
     
     try:
@@ -500,7 +502,7 @@ def handle_user_data(username):
 @app.route('/users', methods=['GET'])
 def list_users():
     """List all registered users (without sensitive info)"""
-    if not db:
+    if not db_connected:
         return jsonify({'error': 'Database connection failed'}), 500
     
     try:
@@ -547,10 +549,10 @@ def root():
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
-    db_status = 'connected' if db else 'disconnected'
+    db_status = 'connected' if db_connected else 'disconnected'
     
     db_info = {}
-    if db:
+    if db_connected:
         try:
             # Get database stats
             user_count = users_collection.count_documents({})
@@ -574,7 +576,7 @@ def health_check():
 @app.route('/stats', methods=['GET'])
 def get_stats():
     """Get database statistics"""
-    if not db:
+    if not db_connected:
         return jsonify({'error': 'Database connection failed'}), 500
     
     try:
@@ -614,7 +616,7 @@ if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     
     print("Starting Flask backend with MongoDB...")
-    print(f"Database Status: {'✓ Connected' if db else '✗ Disconnected'}")
+    print(f"Database Status: {'✓ Connected' if db_connected else '✗ Disconnected'}")
     print(f"MongoDB Config:")
     print(f"  Username: {MONGO_USERNAME}")
     print(f"  Database: {MONGO_DATABASE}")
