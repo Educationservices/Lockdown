@@ -275,7 +275,7 @@ def send_verification_email(email, username, code):
         logger.error(f"Failed to send email: {e}")
         return False
 
-# HTML Template (unchanged for brevity, but would include CSRF tokens in production)
+# HTML Template
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -1009,23 +1009,6 @@ HTML_TEMPLATE = """
         document.getElementById('quick-code').addEventListener('input', function(e) {
             e.target.value = e.target.value.toUpperCase();
         });
-
-        // Input validation and sanitization
-        document.getElementById('login-username').addEventListener('input', function(e) {
-            e.target.value = e.target.value.replace(/[^\\w-]/g, '');
-        });
-        
-        document.getElementById('reg-username').addEventListener('input', function(e) {
-            e.target.value = e.target.value.replace(/[^\\w-]/g, '');
-        });
-        
-        document.getElementById('quick-username').addEventListener('input', function(e) {
-            e.target.value = e.target.value.replace(/[^\\w-]/g, '');
-        });
-        
-        document.getElementById('verification-code').addEventListener('input', function(e) {
-            e.target.value = e.target.value.replace(/[^\\d]/g, '');
-        });
     </script>
 </body>
 </html>
@@ -1054,7 +1037,7 @@ def auth_login():
         clean_username = sanitize_username(username)
         
         # Fixed MongoDB query - exact match with case insensitive
-        user = users_collection.find_one({'username': {'$regex': f'^{re.escape(clean_username)}
+        user = users_collection.find_one({'username': {'$regex': '^' + re.escape(clean_username) + ', '$options': 'i'}})
         
         if not user:
             return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
@@ -1115,10 +1098,10 @@ def auth_register():
         clean_username = sanitize_username(username)
         
         # Check existing username/email with proper escaping
-        if users_collection.find_one({'username': {'$regex': f'^{re.escape(clean_username)}, '$options': 'i'}}):
+        if users_collection.find_one({'username': {'$regex': '^' + re.escape(clean_username) + ', '$options': 'i'}}):
             return jsonify({'success': False, 'message': 'Username already exists'}), 409
         
-        if users_collection.find_one({'email': {'$regex': f'^{re.escape(email)}, '$options': 'i'}}):
+        if users_collection.find_one({'email': {'$regex': '^' + re.escape(email) + ', '$options': 'i'}}):
             return jsonify({'success': False, 'message': 'Email already registered'}), 409
         
         # Create user with additional security fields
@@ -1200,7 +1183,7 @@ def auth_verify():
         
         # Update user as verified
         update_result = users_collection.update_one(
-            {'username': {'$regex': f'^{re.escape(username)}, '$options': 'i'}}, 
+            {'username': {'$regex': '^' + re.escape(username) + ', '$options': 'i'}}, 
             {'$set': {'verified': True, 'verified_at': datetime.utcnow()}}
         )
         
@@ -1237,7 +1220,7 @@ def auth_resend():
         if not username:
             return jsonify({'success': False, 'message': 'Username required'}), 400
         
-        user = users_collection.find_one({'username': {'$regex': f'^{re.escape(username)}, '$options': 'i'}})
+        user = users_collection.find_one({'username': {'$regex': '^' + re.escape(username) + ', '$options': 'i'}})
         if not user:
             return jsonify({'success': False, 'message': 'User not found'}), 404
         
@@ -1315,7 +1298,7 @@ def auth_quicksignin():
         if not username or not code or len(code) != 6:
             return jsonify({'success': False, 'message': 'Username and code required'}), 400
         
-        user = users_collection.find_one({'username': {'$regex': f'^{re.escape(username)}, '$options': 'i'}})
+        user = users_collection.find_one({'username': {'$regex': '^' + re.escape(username) + ', '$options': 'i'}})
         if not user:
             return jsonify({'success': False, 'message': 'Invalid credentials'}), 404
         
@@ -1344,453 +1327,6 @@ def auth_quicksignin():
         
         session.permanent = True
         session.clear()  # Clear existing session data
-        session['user_id'] = str(user['_id'])
-        session['username'] = actual_username
-        session['login_time'] = datetime.utcnow().isoformat()
-        
-        return jsonify({
-            'success': True,
-            'message': 'Quick sign-in successful',
-            'user': {
-                'username': actual_username,
-                'email': user['email'],
-                'user_id': str(user['_id'])
-            }
-        })
-        
-    except Exception as e:
-        logger.error(f"Quick signin error: {e}")
-        return jsonify({'success': False, 'message': 'Quick sign-in failed'}), 500
-
-@app.route('/auth/logout', methods=['POST'])
-def auth_logout():
-    session.clear()
-    return jsonify({'success': True, 'message': 'Logged out successfully'})
-
-# Enhanced data management routes
-@app.route('/data/get', methods=['POST'])
-@cooldown_required(1, per_user=True)
-@requires_auth
-def data_get():
-    if not db_connected:
-        return jsonify({'success': False, 'message': 'Service temporarily unavailable'}), 503
-    
-    try:
-        data = request.get_json()
-        username = data.get('username', '').strip() if data else ''
-        
-        if not username or session.get('username') != username:
-            return jsonify({'success': False, 'message': 'Authentication required'}), 401
-        
-        user_data_doc = user_data_collection.find_one({'username': username})
-        player_data = user_data_doc['data'] if user_data_doc else {}
-        
-        return jsonify({
-            'success': True,
-            'data': player_data
-        })
-        
-    except Exception as e:
-        logger.error(f"Data get error: {e}")
-        return jsonify({'success': False, 'message': 'Failed to retrieve data'}), 500
-
-@app.route('/data/save', methods=['POST'])
-@cooldown_required(1, per_user=True)
-@requires_auth
-def data_save():
-    if not db_connected:
-        return jsonify({'success': False, 'message': 'Service temporarily unavailable'}), 503
-    
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'message': 'Invalid request'}), 400
-        
-        username = data.get('username', '').strip()
-        player_data = data.get('data')
-        
-        if not username or session.get('username') != username:
-            return jsonify({'success': False, 'message': 'Authentication required'}), 401
-        
-        if player_data is None:
-            return jsonify({'success': False, 'message': 'No player data provided'}), 400
-        
-        # Validate data size (prevent abuse)
-        if len(json.dumps(player_data)) > 1048576:  # 1MB limit
-            return jsonify({'success': False, 'message': 'Data too large'}), 400
-        
-        user_data_collection.update_one(
-            {'username': username},
-            {
-                '$set': {
-                    'data': player_data,
-                    'updated_at': datetime.utcnow()
-                }
-            },
-            upsert=True
-        )
-        
-        return jsonify({'success': True, 'message': 'Data saved successfully'})
-        
-    except Exception as e:
-        logger.error(f"Data save error: {e}")
-        return jsonify({'success': False, 'message': 'Failed to save data'}), 500
-
-# Main route to serve the HTML
-@app.route('/', methods=['GET'])
-def serve_app():
-    return render_template_string(HTML_TEMPLATE)
-
-# Enhanced health check
-@app.route('/health', methods=['GET'])
-def health_check():
-    db_status = 'connected' if db_connected else 'disconnected'
-    
-    db_info = {}
-    if db_connected:
-        try:
-            user_count = users_collection.count_documents({})
-            verified_count = users_collection.count_documents({'verified': True})
-            data_count = user_data_collection.count_documents({})
-            db_info = {
-                'total_users': user_count,
-                'verified_users': verified_count,
-                'user_data_records': data_count,
-                'pending_verifications': len(verification_codes),
-                'active_signin_codes': len(signin_codes),
-                'active_ip_sessions': len(request_cooldowns),
-                'active_user_sessions': len(user_cooldowns)
-            }
-        except Exception as e:
-            db_info = {'error': f'Database stats unavailable: {str(e)}'}
-    
-    return jsonify({
-        'status': 'healthy',
-        'database': db_status,
-        'timestamp': datetime.utcnow().isoformat(),
-        'database_info': db_info,
-        'version': '2.0.0-secure'
-    })
-
-# Error handlers
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({'success': False, 'message': 'Endpoint not found'}), 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    return jsonify({'success': False, 'message': 'Internal server error'}), 500
-
-if __name__ == '__main__':
-    port = int(os.getenv('PORT', 5000))
-    
-    print("Starting Secure Lockdown Backend v2.0...")
-    print(f"Database Status: {'✓ Connected' if db_connected else '✗ Disconnected'}")
-    print(f"Email Config: {'✓ Configured' if all([SMTP_SERVER, SENDER_EMAIL, SENDER_PASSWORD]) else '✗ Incomplete'}")
-    print(f"Session Security: {'✓ Configured' if app.secret_key != 'your-secret-key-change-this' else '⚠ Using default key'}")
-    print("\nSecurity Features:")
-    print("- Enhanced input validation and sanitization")
-    print("- Fixed MongoDB regex injection vulnerabilities")
-    print("- Session regeneration on login")
-    print("- Enhanced request cooldowns (IP + user-based)")
-    print("- Authentication decorators")
-    print("- Rate limiting on sensitive operations")
-    print("- Attempt limiting on verification codes")
-    print("- Data size limits")
-    print("- Proper error handling")
-    print("- Enhanced logging")
-    
-    debug_mode = os.getenv('FLASK_ENV') == 'development'
-    app.run(debug=debug_mode, host='0.0.0.0', port=port), '$options': 'i'}})
-        
-        if not user:
-            return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
-        
-        if not user.get('verified', False):
-            return jsonify({'success': False, 'message': 'Account not verified', 'verified': False}), 403
-        
-        if not check_password_hash(user['password'], password):
-            return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
-        
-        # Store user in session with regeneration
-        session.permanent = True
-        session.regenerate()  # Regenerate session ID for security
-        session['user_id'] = str(user['_id'])
-        session['username'] = user['username']
-        session['login_time'] = datetime.utcnow().isoformat()
-        
-        return jsonify({
-            'success': True,
-            'message': 'Login successful',
-            'user': {
-                'username': user['username'],
-                'email': user['email'],
-                'user_id': str(user['_id'])
-            }
-        })
-        
-    except Exception as e:
-        logger.error(f"Login error: {e}")
-        return jsonify({'success': False, 'message': 'Authentication failed'}), 500
-
-@app.route('/auth/register', methods=['POST'])
-@cooldown_required(3)
-def auth_register():
-    if not db_connected:
-        return jsonify({'success': False, 'message': 'Service temporarily unavailable'}), 503
-    
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'message': 'Invalid request'}), 400
-        
-        username = data.get('username', '').strip()
-        email = data.get('email', '').strip().lower()
-        password = data.get('password', '')
-        
-        # Enhanced input validation
-        if not validate_username(username):
-            return jsonify({'success': False, 'message': 'Username must be 3-20 characters, alphanumeric with _ or - only'}), 400
-        
-        if not validate_email(email):
-            return jsonify({'success': False, 'message': 'Invalid email format'}), 400
-        
-        if not validate_password(password):
-            return jsonify({'success': False, 'message': 'Password must be at least 6 characters'}), 400
-        
-        # Sanitize inputs
-        clean_username = sanitize_username(username)
-        
-        # Check existing username/email with proper escaping
-        if users_collection.find_one({'username': {'$regex': f'^{re.escape(clean_username)}, '$options': 'i'}}):
-            return jsonify({'success': False, 'message': 'Username already exists'}), 409
-        
-        if users_collection.find_one({'email': {'$regex': f'^{re.escape(email)}, '$options': 'i'}}):
-            return jsonify({'success': False, 'message': 'Email already registered'}), 409
-        
-        # Create user with additional security fields
-        hashed_password = generate_password_hash(password)
-        user_doc = {
-            'username': clean_username,
-            'email': email,
-            'password': hashed_password,
-            'verified': False,
-            'created_at': datetime.utcnow(),
-            'last_login': None,
-            'login_attempts': 0
-        }
-        
-        result = users_collection.insert_one(user_doc)
-        
-        # Generate and send verification code
-        verification_code = generate_verification_code()
-        verification_codes[clean_username] = {
-            'code': verification_code,
-            'email': email,
-            'expires_at': datetime.utcnow() + timedelta(minutes=10),
-            'attempts': 0
-        }
-        
-        email_sent = send_verification_email(email, clean_username, verification_code)
-        
-        if not email_sent:
-            users_collection.delete_one({'_id': result.inserted_id})
-            if clean_username in verification_codes:
-                del verification_codes[clean_username]
-            return jsonify({'success': False, 'message': 'Failed to send verification email'}), 500
-        
-        return jsonify({
-            'success': True,
-            'message': 'Registration successful. Check your email for verification code.'
-        })
-        
-    except Exception as e:
-        logger.error(f"Registration error: {e}")
-        return jsonify({'success': False, 'message': 'Registration failed'}), 500
-
-@app.route('/auth/verify', methods=['POST'])
-@cooldown_required(1)
-def auth_verify():
-    if not db_connected:
-        return jsonify({'success': False, 'message': 'Service temporarily unavailable'}), 503
-    
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'message': 'Invalid request'}), 400
-        
-        username = sanitize_username(data.get('username', '').strip())
-        code = data.get('code', '').strip()
-        
-        if not username or not code or not code.isdigit() or len(code) != 5:
-            return jsonify({'success': False, 'message': 'Invalid verification code'}), 400
-        
-        if username not in verification_codes:
-            return jsonify({'success': False, 'message': 'Invalid or expired verification code'}), 400
-        
-        verification_data = verification_codes[username]
-        
-        # Check expiration
-        if datetime.utcnow() > verification_data['expires_at']:
-            del verification_codes[username]
-            return jsonify({'success': False, 'message': 'Verification code expired'}), 400
-        
-        # Check attempts
-        if verification_data.get('attempts', 0) >= 5:
-            del verification_codes[username]
-            return jsonify({'success': False, 'message': 'Too many failed attempts'}), 400
-        
-        # Verify code
-        if verification_data['code'] != code:
-            verification_codes[username]['attempts'] = verification_data.get('attempts', 0) + 1
-            return jsonify({'success': False, 'message': 'Invalid verification code'}), 400
-        
-        # Update user as verified
-        update_result = users_collection.update_one(
-            {'username': {'$regex': f'^{re.escape(username)}, '$options': 'i'}}, 
-            {'$set': {'verified': True, 'verified_at': datetime.utcnow()}}
-        )
-        
-        if update_result.matched_count == 0:
-            return jsonify({'success': False, 'message': 'User not found'}), 404
-        
-        # Initialize user data
-        user_data_doc = {
-            'username': username,
-            'data': {},
-            'created_at': datetime.utcnow(),
-            'updated_at': datetime.utcnow()
-        }
-        user_data_collection.insert_one(user_data_doc)
-        
-        del verification_codes[username]
-        
-        return jsonify({'success': True, 'message': 'Account verified successfully'})
-        
-    except Exception as e:
-        logger.error(f"Verification error: {e}")
-        return jsonify({'success': False, 'message': 'Verification failed'}), 500
-
-@app.route('/auth/resend', methods=['POST'])
-@cooldown_required(30)  # Longer cooldown for resend
-def auth_resend():
-    if not db_connected:
-        return jsonify({'success': False, 'message': 'Service temporarily unavailable'}), 503
-    
-    try:
-        data = request.get_json()
-        username = sanitize_username(data.get('username', '').strip()) if data else ''
-        
-        if not username:
-            return jsonify({'success': False, 'message': 'Username required'}), 400
-        
-        user = users_collection.find_one({'username': {'$regex': f'^{re.escape(username)}, '$options': 'i'}})
-        if not user:
-            return jsonify({'success': False, 'message': 'User not found'}), 404
-        
-        if user.get('verified', False):
-            return jsonify({'success': False, 'message': 'Account already verified'}), 400
-        
-        verification_code = generate_verification_code()
-        verification_codes[username] = {
-            'code': verification_code,
-            'email': user['email'],
-            'expires_at': datetime.utcnow() + timedelta(minutes=10),
-            'attempts': 0
-        }
-        
-        email_sent = send_verification_email(user['email'], username, verification_code)
-        
-        if not email_sent:
-            return jsonify({'success': False, 'message': 'Failed to send email'}), 500
-        
-        return jsonify({'success': True, 'message': 'Verification code sent'})
-        
-    except Exception as e:
-        logger.error(f"Resend error: {e}")
-        return jsonify({'success': False, 'message': 'Failed to resend verification'}), 500
-
-@app.route('/auth/generate-signin-code', methods=['POST'])
-@cooldown_required(5, per_user=True)
-@requires_auth
-def auth_generate_signin_code():
-    if not db_connected:
-        return jsonify({'success': False, 'message': 'Service temporarily unavailable'}), 503
-    
-    try:
-        data = request.get_json()
-        username = data.get('username', '').strip() if data else ''
-        
-        if not username or session.get('username') != username:
-            return jsonify({'success': False, 'message': 'Authentication required'}), 401
-        
-        user = users_collection.find_one({'username': username})
-        if not user or not user.get('verified', False):
-            return jsonify({'success': False, 'message': 'User not found or not verified'}), 404
-        
-        signin_code = generate_signin_code()
-        signin_codes[username] = {
-            'code': signin_code,
-            'expires_at': datetime.utcnow() + timedelta(minutes=5),
-            'created_at': datetime.utcnow()
-        }
-        
-        return jsonify({
-            'success': True,
-            'signin_code': signin_code,
-            'expires_in_minutes': 5
-        })
-        
-    except Exception as e:
-        logger.error(f"Generate signin code error: {e}")
-        return jsonify({'success': False, 'message': 'Failed to generate code'}), 500
-
-@app.route('/auth/quicksignin', methods=['POST'])
-@cooldown_required(2)
-def auth_quicksignin():
-    if not db_connected:
-        return jsonify({'success': False, 'message': 'Service temporarily unavailable'}), 503
-    
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'message': 'Invalid request'}), 400
-        
-        username = sanitize_username(data.get('username', '').strip())
-        code = data.get('code', '').strip().upper()
-        
-        if not username or not code or len(code) != 6:
-            return jsonify({'success': False, 'message': 'Username and code required'}), 400
-        
-        user = users_collection.find_one({'username': {'$regex': f'^{re.escape(username)}, '$options': 'i'}})
-        if not user:
-            return jsonify({'success': False, 'message': 'Invalid credentials'}), 404
-        
-        actual_username = user['username']
-        
-        if actual_username not in signin_codes:
-            return jsonify({'success': False, 'message': 'No active sign-in code'}), 400
-        
-        signin_data = signin_codes[actual_username]
-        
-        if datetime.utcnow() > signin_data['expires_at']:
-            del signin_codes[actual_username]
-            return jsonify({'success': False, 'message': 'Sign-in code expired'}), 400
-        
-        if signin_data['code'].upper() != code:
-            return jsonify({'success': False, 'message': 'Invalid sign-in code'}), 400
-        
-        # Remove used code and authenticate user
-        del signin_codes[actual_username]
-        
-        # Update last login
-        users_collection.update_one(
-            {'_id': user['_id']},
-            {'$set': {'last_login': datetime.utcnow()}}
-        )
-        
-        session.permanent = True
-        session.regenerate()
         session['user_id'] = str(user['_id'])
         session['username'] = actual_username
         session['login_time'] = datetime.utcnow().isoformat()
