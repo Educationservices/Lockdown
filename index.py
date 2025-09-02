@@ -37,7 +37,7 @@ CORS(app, supports_credentials=True)
 
 # In-memory storage for verification codes, sign-in codes, and request cooldowns
 verification_codes = {}  # {username: {'code': '12345', 'email': 'user@email.com', 'expires_at': datetime}}
-signin_codes = {}  # {username: {'code': 'ABC123', 'expires_at': datetime}}
+general_signin_codes = {}  # {code: {'authenticated': False, 'username': None, 'expires_at': datetime, 'created_at': datetime}}
 request_cooldowns = {}  # {ip_address: {'last_request': datetime, 'count': int}}
 user_cooldowns = {}  # {username: {'last_request': datetime, 'count': int}}
 
@@ -167,10 +167,10 @@ def cleanup_expired_data():
                 del verification_codes[username]
             
             # Clean up expired sign-in codes
-            expired_signin = [username for username, data in signin_codes.items() 
-                             if current_time > data['expires_at']]
-            for username in expired_signin:
-                del signin_codes[username]
+            expired_general_codes = [code for code, data in general_signin_codes.items() 
+                                   if current_time > data['expires_at']]
+            for code in expired_general_codes:
+                del general_signin_codes[code]
             
             # Clean up old cooldowns (older than 1 hour)
             expired_cooldowns = [ip for ip, data in request_cooldowns.items()
@@ -184,6 +184,10 @@ def cleanup_expired_data():
             for username in expired_user_cooldowns:
                 del user_cooldowns[username]
             
+            # Log cleanup stats
+            if expired_verification or expired_general_codes:
+                logger.info(f"Cleaned up {len(expired_verification)} expired verification codes and {len(expired_general_codes)} expired general codes")
+        
         except Exception as e:
             logger.error(f"Cleanup error: {e}")
         
@@ -197,9 +201,9 @@ def generate_verification_code():
     """Generate a 5-digit verification code"""
     return ''.join(random.choices(string.digits, k=5))
 
-def generate_signin_code():
-    """Generate a 6-character alphanumeric sign-in code"""
-    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+def generate_general_signin_code():
+    """Generate a 10-digit general sign-in code"""
+    return ''.join(random.choices(string.digits, k=10))
 
 def send_verification_email(email, username, code):
     """Send verification email with the styled HTML template"""
@@ -596,22 +600,26 @@ HTML_TEMPLATE = """
                     <p>Account Status: <span style="color: #4caf50;">Verified ✓</span></p>
                 </div>
 
-                <!-- Quick Sign-in Section -->
+                <!-- Code Verification Section -->
                 <div class="user-info" style="margin: 20px 0;">
-                    <h3 style="margin-bottom: 15px; color: #ff0000;">Quick Sign-in Code</h3>
+                    <h3 style="margin-bottom: 15px; color: #ff0000;">External Sign-in Code</h3>
                     <p style="margin-bottom: 15px; font-size: 0.9rem; color: #ccc;">
-                        Generate a temporary code for quick access on other devices
+                        Enter a 10-digit code received from an external source (like a game)
                     </p>
-                    <button class="btn btn-secondary" onclick="generateSigninCode()" id="generate-code-btn">
-                        Generate Sign-in Code
+                    <div class="form-group">
+                        <label for="external-code">Sign-in Code (10 digits)</label>
+                        <input type="text" id="external-code" name="code" maxlength="10" minlength="10" pattern="[0-9]{10}" placeholder="1234567890">
+                    </div>
+                    <button class="btn btn-secondary" onclick="verifyExternalCode()" id="verify-code-btn">
+                        Authenticate Code
                     </button>
-                    <div id="signin-code-display" class="hidden">
-                        <div class="verification-code" id="signin-code-value">ABC123</div>
-                        <p style="font-size: 0.9rem; color: #ffb3b3;">
-                            Code expires in <span id="code-timer">5:00</span> minutes
+                    <div id="code-status" class="hidden">
+                        <div class="verification-code" id="verified-code-display">1234567890</div>
+                        <p style="font-size: 0.9rem; color: #4caf50;">
+                            Code authenticated! External applications can now use this code.
                         </p>
                         <p style="font-size: 0.8rem; color: #888;">
-                            Use this code with your username for quick sign-in
+                            Code expires at: <span id="code-expiry">2024-01-01 12:00:00</span>
                         </p>
                     </div>
                 </div>
@@ -887,42 +895,49 @@ HTML_TEMPLATE = """
             }
         }
 
-        async function generateSigninCode() {
+        async function verifyExternalCode() {
             if (!currentUser) return;
             
-            const btn = document.getElementById('generate-code-btn');
+            const codeInput = document.getElementById('external-code');
+            const code = codeInput.value.trim();
+            
+            if (!code || !/^\d{10}$/.test(code)) {
+                showMessage('Please enter a valid 10-digit code', 'error');
+                return;
+            }
+            
+            const btn = document.getElementById('verify-code-btn');
             btn.disabled = true;
-            btn.textContent = 'Generating...';
+            btn.textContent = 'Authenticating...';
             
             try {
-                const response = await fetch('/auth/generate-signin-code', {
+                const response = await fetch('/auth/verify-signin-code', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     credentials: 'include',
-                    body: JSON.stringify({ username: currentUser.username })
+                    body: JSON.stringify({ code: code })
                 });
                 
                 const data = await response.json();
                 
                 if (data.success) {
-                    document.getElementById('signin-code-value').textContent = data.signin_code;
-                    document.getElementById('signin-code-display').classList.remove('hidden');
+                    document.getElementById('verified-code-display').textContent = data.code;
+                    document.getElementById('code-expiry').textContent = new Date(data.expires_at).toLocaleString();
+                    document.getElementById('code-status').classList.remove('hidden');
+                    codeInput.style.display = 'none';
                     btn.style.display = 'none';
                     
-                    timeRemaining = 5 * 60; // 5 minutes in seconds
-                    startCodeTimer();
-                    
-                    showMessage('Sign-in code generated!', 'success');
+                    showMessage('Sign-in code authenticated successfully!', 'success');
                 } else {
-                    showMessage(data.message || 'Failed to generate code', 'error');
+                    showMessage(data.message || 'Code authentication failed', 'error');
                     btn.disabled = false;
-                    btn.textContent = 'Generate Sign-in Code';
+                    btn.textContent = 'Authenticate Code';
                 }
             } catch (error) {
-                console.error('Generate code error:', error);
+                console.error('Verify code error:', error);
                 showMessage('Network error. Please try again.', 'error');
                 btn.disabled = false;
-                btn.textContent = 'Generate Sign-in Code';
+                btn.textContent = 'Authenticate Code';
             }
         }
 
@@ -958,43 +973,19 @@ HTML_TEMPLATE = """
             await loadPlayerData();
         }
 
-        function startCodeTimer() {
-            codeTimer = setInterval(() => {
-                timeRemaining--;
-                
-                const minutes = Math.floor(timeRemaining / 60);
-                const seconds = timeRemaining % 60;
-                document.getElementById('code-timer').textContent = 
-                    `${minutes}:${seconds.toString().padStart(2, '0')}`;
-                
-                if (timeRemaining <= 0) {
-                    clearInterval(codeTimer);
-                    document.getElementById('signin-code-display').classList.add('hidden');
-                    const btn = document.getElementById('generate-code-btn');
-                    btn.style.display = 'block';
-                    btn.disabled = false;
-                    btn.textContent = 'Generate Sign-in Code';
-                    showMessage('Sign-in code expired', 'info');
-                }
-            }, 1000);
-        }
-
         function logout() {
             currentUser = null;
-            
-            if (codeTimer) {
-                clearInterval(codeTimer);
-                codeTimer = null;
-            }
             
             // Clear server-side session
             fetch('/auth/logout', { method: 'POST', credentials: 'include' });
             
-            document.getElementById('signin-code-display').classList.add('hidden');
-            const btn = document.getElementById('generate-code-btn');
+            document.getElementById('code-status').classList.add('hidden');
+            document.getElementById('external-code').style.display = 'block';
+            document.getElementById('external-code').value = '';
+            const btn = document.getElementById('verify-code-btn');
             btn.style.display = 'block';
             btn.disabled = false;
-            btn.textContent = 'Generate Sign-in Code';
+            btn.textContent = 'Authenticate Code';
             
             showMessage('Logged out successfully', 'info');
             showLogin();
@@ -1004,6 +995,11 @@ HTML_TEMPLATE = """
             document.getElementById('verificationForm').reset();
             document.getElementById('quickSigninForm').reset();
         }
+
+        // Auto-format external code input (digits only)
+        document.getElementById('external-code').addEventListener('input', function(e) {
+            e.target.value = e.target.value.replace(/\D/g, '');
+        });
 
         // Auto-uppercase quick code input
         document.getElementById('quick-code').addEventListener('input', function(e) {
@@ -1037,7 +1033,9 @@ def auth_login():
         clean_username = sanitize_username(username)
         
         # Fixed MongoDB query - exact match with case insensitive
-        user = users_collection.find_one({'username': {'$regex': f'^{re.escape(clean_username)}$', '$options': 'i'}})
+        user = users_collection.find_one({'username': {'$regex': '^' + re.escape(clean_username) + '
+                
+                , '$options': 'i'}})
         
         if not user:
             return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
@@ -1098,10 +1096,14 @@ def auth_register():
         clean_username = sanitize_username(username)
         
         # Check existing username/email with proper escaping
-        if users_collection.find_one({'username': {'$regex': f'^{re.escape(clean_username)}$', '$options': 'i'}}):
+        if users_collection.find_one({'username': {'$regex': '^' + re.escape(clean_username) + '
+                
+                , '$options': 'i'}}):
             return jsonify({'success': False, 'message': 'Username already exists'}), 409
         
-        if users_collection.find_one({'email': {'$regex': f'^{re.escape(email)}$', '$options': 'i'}}):
+        if users_collection.find_one({'email': {'$regex': '^' + re.escape(email) + '
+                
+                , '$options': 'i'}}):
             return jsonify({'success': False, 'message': 'Email already registered'}), 409
         
         # Create user with additional security fields
@@ -1183,7 +1185,9 @@ def auth_verify():
         
         # Update user as verified
         update_result = users_collection.update_one(
-            {'username': {'$regex': f'^{re.escape(username)}$', '$options': 'i'}}, 
+            {'username': {'$regex': '^' + re.escape(username) + '
+                
+                , '$options': 'i'}}, 
             {'$set': {'verified': True, 'verified_at': datetime.utcnow()}}
         )
         
@@ -1220,7 +1224,9 @@ def auth_resend():
         if not username:
             return jsonify({'success': False, 'message': 'Username required'}), 400
         
-        user = users_collection.find_one({'username': {'$regex': f'^{re.escape(username)}$', '$options': 'i'}})
+        user = users_collection.find_one({'username': {'$regex': '^' + re.escape(username) + '
+                
+                , '$options': 'i'}})
         if not user:
             return jsonify({'success': False, 'message': 'User not found'}), 404
         
@@ -1246,6 +1252,25 @@ def auth_resend():
         logger.error(f"Resend error: {e}")
         return jsonify({'success': False, 'message': 'Failed to resend verification'}), 500
 
+@app.route('/quickgensignin', methods=['GET'])
+@cooldown_required(10)  # Prevent abuse from external sources
+def quick_gen_signin():
+    if not db_connected:
+        return jsonify({'success': False, 'message': 'Service temporarily unavailable'}), 503
+    
+    try:
+        # Get username from query parameter
+        username = request.args.get('username', '').strip()
+        
+        if not username or not validate_username(username):
+            return jsonify({'success': False, 'message': 'Valid username required'}), 400
+        
+        # Sanitize username
+        clean_username = sanitize_username(username)
+        
+        # Check if user exists and is verified
+        user = users_collection.find_one({'username': {'$regex': f'^{re.escape(clean_username)}
+
 @app.route('/auth/quicksignin', methods=['POST'])
 @cooldown_required(2)
 def auth_quicksignin():
@@ -1263,7 +1288,291 @@ def auth_quicksignin():
         if not username or not code or len(code) != 6:
             return jsonify({'success': False, 'message': 'Username and code required'}), 400
         
-        user = users_collection.find_one({'username': {'$regex': f'^{re.escape(username)}$', '$options': 'i'}})
+        user = users_collection.find_one({'username': {'$regex': '^' + re.escape(username) + '
+                
+                , '$options': 'i'}})
+        if not user:
+            return jsonify({'success': False, 'message': 'Invalid credentials'}), 404
+        
+        actual_username = user['username']
+        
+        if actual_username not in signin_codes:
+            return jsonify({'success': False, 'message': 'No active sign-in code'}), 400
+        
+        signin_data = signin_codes[actual_username]
+        
+        if datetime.utcnow() > signin_data['expires_at']:
+            del signin_codes[actual_username]
+            return jsonify({'success': False, 'message': 'Sign-in code expired'}), 400
+        
+        if signin_data['code'].upper() != code:
+            return jsonify({'success': False, 'message': 'Invalid sign-in code'}), 400
+        
+        # Remove used code and authenticate user
+        del signin_codes[actual_username]
+        
+        # Update last login
+        users_collection.update_one(
+            {'_id': user['_id']},
+            {'$set': {'last_login': datetime.utcnow()}}
+        )
+        
+        session.permanent = True
+        session.clear()  # Clear existing session data
+        session['user_id'] = str(user['_id'])
+        session['username'] = actual_username
+        session['login_time'] = datetime.utcnow().isoformat()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Quick sign-in successful',
+            'user': {
+                'username': actual_username,
+                'email': user['email'],
+                'user_id': str(user['_id'])
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Quick signin error: {e}")
+        return jsonify({'success': False, 'message': 'Quick sign-in failed'}), 500
+
+@app.route('/auth/logout', methods=['POST'])
+def auth_logout():
+    session.clear()
+    return jsonify({'success': True, 'message': 'Logged out successfully'})
+
+# Enhanced data management routes
+@app.route('/data/get', methods=['POST'])
+@cooldown_required(1, per_user=True)
+@requires_auth
+def data_get():
+    if not db_connected:
+        return jsonify({'success': False, 'message': 'Service temporarily unavailable'}), 503
+    
+    try:
+        data = request.get_json()
+        username = data.get('username', '').strip() if data else ''
+        
+        if not username or session.get('username') != username:
+            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+        
+        user_data_doc = user_data_collection.find_one({'username': username})
+        player_data = user_data_doc['data'] if user_data_doc else {}
+        
+        return jsonify({
+            'success': True,
+            'data': player_data
+        })
+        
+    except Exception as e:
+        logger.error(f"Data get error: {e}")
+        return jsonify({'success': False, 'message': 'Failed to retrieve data'}), 500
+
+@app.route('/data/save', methods=['POST'])
+@cooldown_required(1, per_user=True)
+@requires_auth
+def data_save():
+    if not db_connected:
+        return jsonify({'success': False, 'message': 'Service temporarily unavailable'}), 503
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': 'Invalid request'}), 400
+        
+        username = data.get('username', '').strip()
+        player_data = data.get('data')
+        
+        if not username or session.get('username') != username:
+            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+        
+        if player_data is None:
+            return jsonify({'success': False, 'message': 'No player data provided'}), 400
+        
+        # Validate data size (prevent abuse)
+        if len(json.dumps(player_data)) > 1048576:  # 1MB limit
+            return jsonify({'success': False, 'message': 'Data too large'}), 400
+        
+        user_data_collection.update_one(
+            {'username': username},
+            {
+                '$set': {
+                    'data': player_data,
+                    'updated_at': datetime.utcnow()
+                }
+            },
+            upsert=True
+        )
+        
+        return jsonify({'success': True, 'message': 'Data saved successfully'})
+        
+    except Exception as e:
+        logger.error(f"Data save error: {e}")
+        return jsonify({'success': False, 'message': 'Failed to save data'}), 500
+
+# Main route to serve the HTML
+@app.route('/', methods=['GET'])
+def serve_app():
+    return render_template_string(HTML_TEMPLATE)
+
+# Enhanced health check
+@app.route('/health', methods=['GET'])
+def health_check():
+    db_status = 'connected' if db_connected else 'disconnected'
+    
+    db_info = {}
+    if db_connected:
+        try:
+            user_count = users_collection.count_documents({})
+            verified_count = users_collection.count_documents({'verified': True})
+            data_count = user_data_collection.count_documents({})
+            db_info = {
+                'total_users': user_count,
+                'verified_users': verified_count,
+                'user_data_records': data_count,
+                'pending_verifications': len(verification_codes),
+                'active_signin_codes': len(signin_codes),
+                'active_ip_sessions': len(request_cooldowns),
+                'active_user_sessions': len(user_cooldowns)
+            }
+        except Exception as e:
+            db_info = {'error': f'Database stats unavailable: {str(e)}'}
+    
+    return jsonify({
+        'status': 'healthy',
+        'database': db_status,
+        'timestamp': datetime.utcnow().isoformat(),
+        'database_info': db_info,
+        'version': '2.0.0-secure'
+    })
+
+# Error handlers
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({'success': False, 'message': 'Endpoint not found'}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({'success': False, 'message': 'Internal server error'}), 500
+
+if __name__ == '__main__':
+    port = int(os.getenv('PORT', 5000))
+    
+    print("Starting Secure Lockdown Backend v2.0...")
+    print(f"Database Status: {'✓ Connected' if db_connected else '✗ Disconnected'}")
+    print(f"Email Config: {'✓ Configured' if all([SMTP_SERVER, SENDER_EMAIL, SENDER_PASSWORD]) else '✗ Incomplete'}")
+    print(f"Session Security: {'✓ Configured' if app.secret_key != 'your-secret-key-change-this' else '⚠ Using default key'}")
+    print("\nSecurity Features:")
+    print("- Enhanced input validation and sanitization")
+    print("- Fixed MongoDB regex injection vulnerabilities")
+    print("- Session regeneration on login")
+    print("- Enhanced request cooldowns (IP + user-based)")
+    print("- Authentication decorators")
+    print("- Rate limiting on sensitive operations")
+    print("- Attempt limiting on verification codes")
+    print("- Data size limits")
+    print("- Proper error handling")
+    print("- Enhanced logging")
+    
+    debug_mode = os.getenv('FLASK_ENV') == 'development'
+    app.run(debug=debug_mode, host='0.0.0.0', port=port)
+                
+                , '$options': 'i'}})
+        if not user or not user.get('verified', False):
+            return jsonify({'success': False, 'message': 'User not found or not verified'}), 404
+        
+        actual_username = user['username']
+        
+        # Generate signin code
+        signin_code = generate_signin_code()
+        signin_codes[actual_username] = {
+            'code': signin_code,
+            'expires_at': datetime.utcnow() + timedelta(minutes=5),
+            'created_at': datetime.utcnow()
+        }
+        
+        return jsonify({
+            'success': True,
+            'signin_code': signin_code,
+            'username': actual_username,
+            'expires_in_minutes': 5,
+            'message': 'Sign-in code generated successfully'
+        })
+        
+    except Exception as e:
+        logger.error(f"Quick gen signin error: {e}")
+        return jsonify({'success': False, 'message': 'Failed to generate signin code'}), 500
+
+@app.route('/auth/verify-signin-code', methods=['POST'])
+@cooldown_required(2, per_user=True)
+@requires_auth
+def auth_verify_signin_code():
+    """Verify a signin code from the dashboard"""
+    if not db_connected:
+        return jsonify({'success': False, 'message': 'Service temporarily unavailable'}), 503
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': 'Invalid request'}), 400
+        
+        code = data.get('code', '').strip().upper()
+        current_username = session.get('username')
+        
+        if not code or len(code) != 6:
+            return jsonify({'success': False, 'message': 'Invalid code format'}), 400
+        
+        if not current_username:
+            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+        
+        # Check if the code exists for this user
+        if current_username not in signin_codes:
+            return jsonify({'success': False, 'message': 'No active sign-in code for your account'}), 400
+        
+        signin_data = signin_codes[current_username]
+        
+        # Check expiration
+        if datetime.utcnow() > signin_data['expires_at']:
+            del signin_codes[current_username]
+            return jsonify({'success': False, 'message': 'Sign-in code expired'}), 400
+        
+        # Verify code
+        if signin_data['code'].upper() != code:
+            return jsonify({'success': False, 'message': 'Invalid sign-in code'}), 400
+        
+        # Code is valid - keep it active for external use
+        return jsonify({
+            'success': True,
+            'message': 'Sign-in code verified successfully',
+            'code': signin_data['code'],
+            'expires_at': signin_data['expires_at'].isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Verify signin code error: {e}")
+        return jsonify({'success': False, 'message': 'Failed to verify code'}), 500
+
+@app.route('/auth/quicksignin', methods=['POST'])
+@cooldown_required(2)
+def auth_quicksignin():
+    if not db_connected:
+        return jsonify({'success': False, 'message': 'Service temporarily unavailable'}), 503
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': 'Invalid request'}), 400
+        
+        username = sanitize_username(data.get('username', '').strip())
+        code = data.get('code', '').strip().upper()
+        
+        if not username or not code or len(code) != 6:
+            return jsonify({'success': False, 'message': 'Username and code required'}), 400
+        
+        user = users_collection.find_one({'username': {'$regex': '^' + re.escape(username) + '
+                
+                , '$options': 'i'}})
         if not user:
             return jsonify({'success': False, 'message': 'Invalid credentials'}), 404
         
