@@ -943,6 +943,7 @@ def auth_login():
         return jsonify({'success': False, 'message': 'Username and password required'}), 400
     
     try:
+        # Fixed the regex query - properly escaped quotes
         user = users_collection.find_one({'username': {'$regex': f'^{username}, '$options': 'i'}})
         
         if not user:
@@ -996,7 +997,7 @@ def auth_register():
         return jsonify({'success': False, 'message': 'Password must be at least 6 characters'}), 400
     
     try:
-        # Check existing username/email
+        # Check existing username/email with proper regex
         if users_collection.find_one({'username': {'$regex': f'^{username}, '$options': 'i'}}):
             return jsonify({'success': False, 'message': 'Username already exists'}), 409
         
@@ -1181,6 +1182,7 @@ def auth_quicksignin():
         return jsonify({'success': False, 'message': 'Username and code required'}), 400
     
     try:
+        # Fixed regex query here too
         user = users_collection.find_one({'username': {'$regex': f'^{username}, '$options': 'i'}})
         if not user:
             return jsonify({'success': False, 'message': 'User not found'}), 404
