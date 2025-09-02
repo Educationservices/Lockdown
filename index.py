@@ -573,6 +573,46 @@ def quick_gen_signin():
         logger.error(f"Quick gen signin error: {e}")
         return jsonify({'success': False, 'message': 'Failed to generate signin code'}), 500
 
+@app.route('/auth/generate-signin-code', methods=['POST'])
+@cooldown_required(10, per_user=True)
+@requires_auth
+def auth_generate_signin_code():
+    """Generate a new sign-in code for the authenticated user"""
+    if not db_connected:
+        return jsonify({'success': False, 'message': 'Service temporarily unavailable'}), 503
+    
+    try:
+        current_username = session.get('username')
+        
+        if not current_username:
+            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+        
+        # Check if user exists and is verified
+        user = users_collection.find_one({'username': {'$regex': f'^{re.escape(current_username)}$', '$options': 'i'}})
+        if not user or not user.get('verified', False):
+            return jsonify({'success': False, 'message': 'User not found or not verified'}), 404
+        
+        # Generate signin code
+        signin_code = generate_signin_code()
+        signin_codes[current_username] = {
+            'code': signin_code,
+            'expires_at': datetime.utcnow() + timedelta(minutes=5),
+            'created_at': datetime.utcnow()
+        }
+        
+        return jsonify({
+            'success': True,
+            'signin_code': signin_code,
+            'username': current_username,
+            'expires_at': signin_codes[current_username]['expires_at'].isoformat(),
+            'expires_in_minutes': 5,
+            'message': 'Sign-in code generated successfully'
+        })
+        
+    except Exception as e:
+        logger.error(f"Generate signin code error: {e}")
+        return jsonify({'success': False, 'message': 'Failed to generate signin code'}), 500
+
 @app.route('/auth/verify-signin-code', methods=['POST'])
 @cooldown_required(2, per_user=True)
 @requires_auth
