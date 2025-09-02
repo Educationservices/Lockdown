@@ -1,4 +1,5 @@
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 from pymongo import MongoClient
 from datetime import datetime, timedelta
@@ -16,6 +17,15 @@ import string
 load_dotenv()
 
 app = Flask(__name__)
+
+# Enable CORS for all domains on all routes
+CORS(app, resources={
+    r"/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"]
+    }
+})
 
 # MongoDB connection from environment variables
 MONGO_USERNAME = os.getenv('MONGO_USERNAME')
