@@ -1037,9 +1037,7 @@ def auth_login():
         clean_username = sanitize_username(username)
         
         # Fixed MongoDB query - exact match with case insensitive
-        user = users_collection.find_one({'username': {'$regex': '^' + re.escape(clean_username) + '
-                
-                , '$options': 'i'}})
+        user = users_collection.find_one({'username': {'$regex': f'^{re.escape(clean_username)}$', '$options': 'i'}})
         
         if not user:
             return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
@@ -1100,14 +1098,10 @@ def auth_register():
         clean_username = sanitize_username(username)
         
         # Check existing username/email with proper escaping
-        if users_collection.find_one({'username': {'$regex': '^' + re.escape(clean_username) + '
-                
-                , '$options': 'i'}}):
+        if users_collection.find_one({'username': {'$regex': f'^{re.escape(clean_username)}$', '$options': 'i'}}):
             return jsonify({'success': False, 'message': 'Username already exists'}), 409
         
-        if users_collection.find_one({'email': {'$regex': '^' + re.escape(email) + '
-                
-                , '$options': 'i'}}):
+        if users_collection.find_one({'email': {'$regex': f'^{re.escape(email)}$', '$options': 'i'}}):
             return jsonify({'success': False, 'message': 'Email already registered'}), 409
         
         # Create user with additional security fields
@@ -1189,9 +1183,7 @@ def auth_verify():
         
         # Update user as verified
         update_result = users_collection.update_one(
-            {'username': {'$regex': '^' + re.escape(username) + '
-                
-                , '$options': 'i'}}, 
+            {'username': {'$regex': f'^{re.escape(username)}$', '$options': 'i'}}, 
             {'$set': {'verified': True, 'verified_at': datetime.utcnow()}}
         )
         
@@ -1228,9 +1220,7 @@ def auth_resend():
         if not username:
             return jsonify({'success': False, 'message': 'Username required'}), 400
         
-        user = users_collection.find_one({'username': {'$regex': '^' + re.escape(username) + '
-                
-                , '$options': 'i'}})
+        user = users_collection.find_one({'username': {'$regex': f'^{re.escape(username)}$', '$options': 'i'}})
         if not user:
             return jsonify({'success': False, 'message': 'User not found'}), 404
         
@@ -1256,41 +1246,6 @@ def auth_resend():
         logger.error(f"Resend error: {e}")
         return jsonify({'success': False, 'message': 'Failed to resend verification'}), 500
 
-@app.route('/auth/generate-signin-code', methods=['POST'])
-@cooldown_required(5, per_user=True)
-@requires_auth
-def auth_generate_signin_code():
-    if not db_connected:
-        return jsonify({'success': False, 'message': 'Service temporarily unavailable'}), 503
-    
-    try:
-        data = request.get_json()
-        username = data.get('username', '').strip() if data else ''
-        
-        if not username or session.get('username') != username:
-            return jsonify({'success': False, 'message': 'Authentication required'}), 401
-        
-        user = users_collection.find_one({'username': username})
-        if not user or not user.get('verified', False):
-            return jsonify({'success': False, 'message': 'User not found or not verified'}), 404
-        
-        signin_code = generate_signin_code()
-        signin_codes[username] = {
-            'code': signin_code,
-            'expires_at': datetime.utcnow() + timedelta(minutes=5),
-            'created_at': datetime.utcnow()
-        }
-        
-        return jsonify({
-            'success': True,
-            'signin_code': signin_code,
-            'expires_in_minutes': 5
-        })
-        
-    except Exception as e:
-        logger.error(f"Generate signin code error: {e}")
-        return jsonify({'success': False, 'message': 'Failed to generate code'}), 500
-
 @app.route('/auth/quicksignin', methods=['POST'])
 @cooldown_required(2)
 def auth_quicksignin():
@@ -1308,9 +1263,7 @@ def auth_quicksignin():
         if not username or not code or len(code) != 6:
             return jsonify({'success': False, 'message': 'Username and code required'}), 400
         
-        user = users_collection.find_one({'username': {'$regex': '^' + re.escape(username) + '
-                
-                , '$options': 'i'}})
+        user = users_collection.find_one({'username': {'$regex': f'^{re.escape(username)}$', '$options': 'i'}})
         if not user:
             return jsonify({'success': False, 'message': 'Invalid credentials'}), 404
         
