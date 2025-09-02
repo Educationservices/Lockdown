@@ -526,6 +526,24 @@ def list_users():
             'error': f'Failed to retrieve users: {str(e)}'
         }), 500
 
+@app.route('/', methods=['GET'])
+def root():
+    """Root endpoint for basic health check"""
+    return jsonify({
+        'status': 'Lockdown API is running',
+        'version': '1.0.0',
+        'endpoints': [
+            '/health',
+            '/stats', 
+            '/users',
+            '/usernamecheck/<username>',
+            '/registeruser/<username>/<email>/<password>',
+            '/verify/<username>/<code>',
+            '/resend-verification/<username>',
+            '/<username>'
+        ]
+    })
+
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
@@ -592,6 +610,9 @@ def internal_error(error):
     }), 500
 
 if __name__ == '__main__':
+    # Get port from environment variable (Render sets this)
+    port = int(os.getenv('PORT', 5000))
+    
     print("Starting Flask backend with MongoDB...")
     print(f"Database Status: {'✓ Connected' if db else '✗ Disconnected'}")
     print(f"MongoDB Config:")
@@ -615,9 +636,11 @@ if __name__ == '__main__':
     print("- GET  /users (list all users)")
     print("- GET  /health (health check)")
     print("- GET  /stats (database statistics)")
-    print(f"\nServer starting on http://0.0.0.0:5000")
+    print(f"\nServer starting on http://0.0.0.0:{port}")
     if not MONGO_PASSWORD or MONGO_PASSWORD == 'your_password_here':
         print("\n⚠️  WARNING: Please set your MongoDB environment variables!")
         print("   Set MONGO_PASSWORD at minimum, or all variables for custom config.")
     
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # For production deployment (like Render), disable debug mode
+    debug_mode = os.getenv('FLASK_ENV') == 'development'
+    app.run(debug=debug_mode, host='0.0.0.0', port=port)
