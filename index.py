@@ -13,6 +13,8 @@ from email.mime.multipart import MIMEMultipart
 import random
 import string
 import logging
+import threading
+import time
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -31,6 +33,10 @@ CORS(app, resources={
         "allow_headers": ["Content-Type", "Authorization"]
     }
 })
+
+# In-memory storage for verification codes and sign-in codes
+verification_codes = {}  # {username: {'code': '12345', 'email': 'user@email.com', 'expires_at': datetime}}
+signin_codes = {}  # {username: {'code': 'ABC123', 'expires_at': datetime}}
 
 # MongoDB connection from environment variables
 MONGO_USERNAME = os.getenv('MONGO_USERNAME')
@@ -52,7 +58,6 @@ try:
     db = client[MONGO_DATABASE]  # Use environment variable for database name
     users_collection = db['users']  # Collection for user accounts
     user_data_collection = db['user_data']  # Collection for player data
-    verification_collection = db['verification_codes']  # Collection for verification codes
     
     # Test connection
     client.admin.command('ping')
@@ -73,9 +78,40 @@ class JSONEncoder(json.JSONEncoder):
             return str(obj)
         return super().default(obj)
 
+def cleanup_expired_codes():
+    """Background thread to clean up expired codes"""
+    while True:
+        current_time = datetime.utcnow()
+        
+        # Clean up expired verification codes
+        expired_verification = [username for username, data in verification_codes.items() 
+                              if current_time > data['expires_at']]
+        for username in expired_verification:
+            del verification_codes[username]
+        
+        # Clean up expired sign-in codes
+        expired_signin = [username for username, data in signin_codes.items() 
+                         if current_time > data['expires_at']]
+        for username in expired_signin:
+            del signin_codes[username]
+        
+        if expired_verification or expired_signin:
+            logger.info(f"Cleaned up {len(expired_verification)} verification codes and {len(expired_signin)} sign-in codes")
+        
+        # Sleep for 1 minute before next cleanup
+        time.sleep(60)
+
+# Start background cleanup thread
+cleanup_thread = threading.Thread(target=cleanup_expired_codes, daemon=True)
+cleanup_thread.start()
+
 def generate_verification_code():
     """Generate a 5-digit verification code"""
     return ''.join(random.choices(string.digits, k=5))
+
+def generate_signin_code():
+    """Generate a 6-character alphanumeric sign-in code"""
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
 def send_verification_email(email, username, code):
     """Send verification email with the styled HTML template"""
@@ -271,9 +307,6 @@ def check_username(username):
 @app.route('/checkcode/<username>', methods=['GET'])
 def check_code(username):
     """Check if user has a valid verification code"""
-    if not db_connected:
-        return jsonify({'error': 'Database connection failed'}), 500
-    
     if not username:
         return jsonify({
             'has_code': False,
@@ -281,24 +314,141 @@ def check_code(username):
         }), 400
     
     try:
-        # Find active verification code
-        verification_doc = verification_collection.find_one({
-            'username': username,
-            'expires_at': {'$gt': datetime.utcnow()}
-        })
-        
-        has_code = verification_doc is not None
+        # Check in-memory verification codes
+        has_code = username in verification_codes and datetime.utcnow() < verification_codes[username]['expires_at']
         
         return jsonify({
             'username': username,
             'has_code': has_code,
             'message': 'Active verification code found' if has_code else 'No active verification code',
-            'expires_at': verification_doc['expires_at'].isoformat() if has_code else None
+            'expires_at': verification_codes[username]['expires_at'].isoformat() if has_code else None
         })
         
     except Exception as e:
         return jsonify({
             'error': f'Failed to check verification code: {str(e)}'
+        }), 500
+
+@app.route('/getsignincode/<username>', methods=['GET'])
+def get_signin_code(username):
+    """Generate and return a sign-in code for quick login"""
+    if not db_connected:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    if not username:
+        return jsonify({
+            'success': False,
+            'message': 'Username cannot be empty'
+        }), 400
+    
+    try:
+        # Find user (case insensitive)
+        user = users_collection.find_one({'username': {'$regex': f'^{username}$', '$options': 'i'}})
+        
+        if not user:
+            return jsonify({
+                'success': False,
+                'message': 'User not found'
+            }), 404
+        
+        if not user.get('verified', False):
+            return jsonify({
+                'success': False,
+                'message': 'Account not verified'
+            }), 403
+        
+        # Generate new sign-in code
+        signin_code = generate_signin_code()
+        
+        # Store sign-in code in memory (expires in 5 minutes)
+        signin_codes[user['username']] = {
+            'code': signin_code,
+            'expires_at': datetime.utcnow() + timedelta(minutes=5)
+        }
+        
+        logger.info(f"Generated sign-in code for {user['username']}: {signin_code}")
+        
+        return jsonify({
+            'success': True,
+            'username': user['username'],
+            'signin_code': signin_code,
+            'expires_in_minutes': 5,
+            'message': 'Sign-in code generated successfully'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error generating sign-in code: {e}")
+        return jsonify({
+            'success': False,
+            'message': 'Failed to generate sign-in code'
+        }), 500
+
+@app.route('/quicksignin/<username>/<code>', methods=['POST'])
+def quick_signin(username, code):
+    """Quick sign-in using generated code"""
+    if not db_connected:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    if not username or not code:
+        return jsonify({
+            'success': False,
+            'message': 'Username and code are required'
+        }), 400
+    
+    try:
+        # Find user (case insensitive)
+        user = users_collection.find_one({'username': {'$regex': f'^{username}$', '$options': 'i'}})
+        
+        if not user:
+            return jsonify({
+                'success': False,
+                'message': 'User not found'
+            }), 404
+        
+        actual_username = user['username']
+        
+        # Check if sign-in code exists and is valid
+        if actual_username not in signin_codes:
+            return jsonify({
+                'success': False,
+                'message': 'No active sign-in code found'
+            }), 400
+        
+        signin_data = signin_codes[actual_username]
+        
+        # Check if code has expired
+        if datetime.utcnow() > signin_data['expires_at']:
+            del signin_codes[actual_username]
+            return jsonify({
+                'success': False,
+                'message': 'Sign-in code has expired'
+            }), 400
+        
+        # Check if code matches
+        if signin_data['code'].upper() != code.upper():
+            return jsonify({
+                'success': False,
+                'message': 'Invalid sign-in code'
+            }), 400
+        
+        # Remove used sign-in code
+        del signin_codes[actual_username]
+        
+        # Successful quick sign-in
+        return jsonify({
+            'success': True,
+            'message': 'Quick sign-in successful',
+            'username': actual_username,
+            'user_id': str(user['_id']),
+            'verified': True,
+            'email': user['email']
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Quick sign-in error: {e}")
+        return jsonify({
+            'success': False,
+            'message': 'Quick sign-in failed'
         }), 500
 
 @app.route('/login', methods=['POST'])
@@ -431,15 +581,12 @@ def register_user(username, email, password):
         # Insert user into database
         result = users_collection.insert_one(user_doc)
         
-        # Store verification code
-        verification_doc = {
-            'username': username,
-            'email': email,
+        # Store verification code in memory
+        verification_codes[username] = {
             'code': verification_code,
-            'created_at': datetime.utcnow(),
+            'email': email,
             'expires_at': datetime.utcnow() + timedelta(minutes=10)
         }
-        verification_collection.insert_one(verification_doc)
         
         # Send verification email
         logger.info(f"Attempting to send verification email to {email}")
@@ -448,7 +595,8 @@ def register_user(username, email, password):
         if not email_sent:
             # If email fails, remove the user and verification code
             users_collection.delete_one({'_id': result.inserted_id})
-            verification_collection.delete_one({'username': username})
+            if username in verification_codes:
+                del verification_codes[username]
             return jsonify({
                 'success': False,
                 'message': 'Failed to send verification email. Please try again.'
@@ -476,25 +624,29 @@ def verify_user(username, code):
         return jsonify({'error': 'Database connection failed'}), 500
     
     try:
-        # Find verification code
-        verification_doc = verification_collection.find_one({
-            'username': username,
-            'code': code
-        })
-        
-        if not verification_doc:
+        # Check in-memory verification codes
+        if username not in verification_codes:
             return jsonify({
                 'success': False,
                 'message': 'Invalid verification code'
             }), 400
         
+        verification_data = verification_codes[username]
+        
         # Check if code has expired
-        if datetime.utcnow() > verification_doc['expires_at']:
+        if datetime.utcnow() > verification_data['expires_at']:
             # Remove expired code
-            verification_collection.delete_one({'_id': verification_doc['_id']})
+            del verification_codes[username]
             return jsonify({
                 'success': False,
                 'message': 'Verification code has expired'
+            }), 400
+        
+        # Check if code matches
+        if verification_data['code'] != code:
+            return jsonify({
+                'success': False,
+                'message': 'Invalid verification code'
             }), 400
         
         # Update user as verified
@@ -512,8 +664,8 @@ def verify_user(username, code):
         }
         user_data_collection.insert_one(user_data_doc)
         
-        # Remove verification code
-        verification_collection.delete_one({'_id': verification_doc['_id']})
+        # Remove verification code from memory
+        del verification_codes[username]
         
         return jsonify({
             'success': True,
@@ -548,21 +700,15 @@ def resend_verification(username):
                 'message': 'Account is already verified'
             }), 400
         
-        # Remove old verification codes
-        verification_collection.delete_many({'username': username})
-        
         # Generate new verification code
         verification_code = generate_verification_code()
         
-        # Store new verification code
-        verification_doc = {
-            'username': username,
-            'email': user['email'],
+        # Store new verification code in memory
+        verification_codes[username] = {
             'code': verification_code,
-            'created_at': datetime.utcnow(),
+            'email': user['email'],
             'expires_at': datetime.utcnow() + timedelta(minutes=10)
         }
-        verification_collection.insert_one(verification_doc)
         
         # Send verification email
         email_sent = send_verification_email(user['email'], username, verification_code)
@@ -707,6 +853,8 @@ def root():
             '/users',
             '/usernamecheck/<username>',
             '/checkcode/<username>',
+            '/getsignincode/<username>',
+            '/quicksignin/<username>/<code>',
             '/login (POST)',
             '/registeruser/<username>/<email>/<password>',
             '/verify/<username>/<code>',
@@ -726,11 +874,11 @@ def health_check():
             # Get database stats
             user_count = users_collection.count_documents({})
             data_count = user_data_collection.count_documents({})
-            verification_count = verification_collection.count_documents({})
             db_info = {
                 'users_count': user_count,
                 'user_data_count': data_count,
-                'verification_codes_count': verification_count
+                'verification_codes_in_memory': len(verification_codes),
+                'signin_codes_in_memory': len(signin_codes)
             }
         except:
             db_info = {'error': 'Could not retrieve stats'}
@@ -755,7 +903,8 @@ def get_stats():
             'unverified_users': users_collection.count_documents({'verified': False}),
             'total_user_data_records': user_data_collection.count_documents({}),
             'users_with_data': user_data_collection.count_documents({'data': {'$ne': {}}}),
-            'pending_verifications': verification_collection.count_documents({}),
+            'verification_codes_in_memory': len(verification_codes),
+            'signin_codes_in_memory': len(signin_codes),
             'recent_registrations': users_collection.count_documents({
                 'created_at': {'$gte': datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)}
             })
@@ -805,10 +954,15 @@ if __name__ == '__main__':
     else:
         print("\n✗ Email configuration incomplete")
     
+    print("\nMemory-based verification and sign-in codes initialized")
+    print("Background cleanup thread started for expired codes")
+    
     print("\nAvailable endpoints:")
     print("- POST /email-test (test email configuration)")
     print("- GET  /usernamecheck/<username>")
     print("- GET  /checkcode/<username>")
+    print("- GET  /getsignincode/<username> (NEW: generate sign-in code)")
+    print("- POST /quicksignin/<username>/<code> (NEW: quick sign-in with code)")
     print("- POST /login (secure password authentication)")
     print("- POST /registeruser/<username>/<email>/<password>")
     print("- POST /verify/<username>/<code>")
