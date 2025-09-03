@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn, uuid, time, asyncio
 
@@ -14,8 +14,8 @@ app.add_middleware(
 )
 
 # In-memory storage
-users = {}   # {username: {data: {}}}
-games = {}   # {game_id: {"user": username, "last_ping": float}}
+users = {}   # {username: {data: {}, "position": (x,y)}}
+games = {}   # {game_id: {"user": username, "last_ping": float, "ws": WebSocket}}
 
 # -------------------------
 # User Endpoints
@@ -28,14 +28,6 @@ async def user_count():
 async def user_list():
     return {"users": list(users.keys())}
 
-@app.post("/user")
-async def update_user(user: str, request: Request):
-    body = await request.json()
-    if user not in users:
-        users[user] = {"data": {}}
-    users[user]["data"].update(body)
-    return {"message": "User data updated", "user": user, "data": users[user]}
-
 @app.get("/view")
 async def view_user(user: str):
     if user not in users:
@@ -46,35 +38,64 @@ async def view_user(user: str):
     return {"valid": False}
 
 # -------------------------
-# Game Endpoints
+# Game start
 # -------------------------
-@app.post("/gamestart")
+@app.get("/gamestart")
 async def game_start(user: str):
-    users[user] = {"data": {}}
+    users[user] = {"data": {}, "position": (0, 0)}
     game_id = str(uuid.uuid4())
-    games[game_id] = {"user": user, "last_ping": time.time()}
+    games[game_id] = {"user": user, "last_ping": time.time(), "ws": None}
     return {"game_id": game_id, "user": user}
 
-@app.post("/game")
-async def game_ping(id: str):
-    if id in games:
-        games[id]["last_ping"] = time.time()
-        return {"status": "pong", "id": id}
-    return {"status": "invalid id"}
+# -------------------------
+# WebSocket for game pings + updates
+# -------------------------
+@app.websocket("/game/{game_id}")
+async def game_ws(websocket: WebSocket, game_id: str):
+    await websocket.accept()
+    if game_id not in games:
+        await websocket.send_json({"error": "invalid id"})
+        await websocket.close()
+        return
+
+    games[game_id]["ws"] = websocket
+    user = games[game_id]["user"]
+
+    try:
+        while True:
+            msg = await websocket.receive_json()
+            games[game_id]["last_ping"] = time.time()
+
+            if msg.get("type") == "ping":
+                await websocket.send_json({"status": "pong", "id": game_id})
+
+            elif msg.get("type") == "pos":
+                x, y = msg.get("x"), msg.get("y")
+                users[user]["position"] = (x, y)
+                await websocket.send_json({"status": "pos_updated", "x": x, "y": y})
+
+    except WebSocketDisconnect:
+        # Cleanup when client disconnects
+        if game_id in games:
+            del games[game_id]
+        if user in users:
+            del users[user]
 
 # -------------------------
-# Automatic cleanup task
+# Auto cleanup expired sessions
 # -------------------------
 async def cleanup_task():
     while True:
         now = time.time()
         for gid, g in list(games.items()):
-            if now - g["last_ping"] > 10:
-                username = g["user"]
+            if now - g["last_ping"] > 10:  # expired
+                user = g["user"]
+                if g["ws"]:
+                    await g["ws"].close()
                 del games[gid]
-                if username in users:
-                    del users[username]
-        await asyncio.sleep(1)  # run every 1 second
+                if user in users:
+                    del users[user]
+        await asyncio.sleep(1)
 
 @app.on_event("startup")
 async def startup_event():
