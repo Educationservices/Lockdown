@@ -609,7 +609,10 @@ HTML_TEMPLATE = """
                     </p>
                     <div class="form-group">
                         <label for="external-code">Sign-in Code (6 characters)</label>
-                        <input type="text" id="external-code" name="code" maxlength="6" minlength="6" pattern="[A-Z0-9]{6}" placeholder="ABC123" style="text-transform: uppercase;">
+<input type="text" id="external-code" name="code" maxlength="6" minlength="6"
+       pattern="[A-Za-z0-9]{6}" placeholder="ABC123"
+       oninput="this.value = this.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();">
+
                     </div>
                     <button class="btn btn-secondary" onclick="verifyExternalCode()" id="verify-code-btn">
                         Authenticate Code
