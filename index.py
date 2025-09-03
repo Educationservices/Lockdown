@@ -1,21 +1,21 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
-import uuid, time
+import uvicorn, uuid, time, asyncio
 
 app = FastAPI()
 
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],      # you can restrict this to your game domain if you want
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 # In-memory storage
-users = {"test": {"data": {}}}   # ensure "test" always exists
-games = {}   # {id: {"user": str, "last_ping": float}}
+users = {}   # {username: {data: {}}}
+games = {}   # {game_id: {"user": username, "last_ping": float}}
 
 # -------------------------
 # User Endpoints
@@ -26,10 +26,7 @@ async def user_count():
 
 @app.get("/userlist")
 async def user_list():
-    # Always include "test"
-    user_list = set(users.keys())
-    user_list.add("test")
-    return {"users": list(user_list)}
+    return {"users": list(users.keys())}
 
 @app.post("/user")
 async def update_user(user: str, request: Request):
@@ -43,11 +40,9 @@ async def update_user(user: str, request: Request):
 async def view_user(user: str):
     if user not in users:
         return {"valid": False, "reason": "User not found"}
-    # Check if they have an active game session
     for gid, g in games.items():
-        if g["user"] == user:
-            if time.time() - g["last_ping"] <= 10:
-                return {"valid": True, "game_id": gid}
+        if g["user"] == user and time.time() - g["last_ping"] <= 10:
+            return {"valid": True, "game_id": gid}
     return {"valid": False}
 
 # -------------------------
@@ -55,8 +50,7 @@ async def view_user(user: str):
 # -------------------------
 @app.post("/gamestart")
 async def game_start(user: str):
-    if user not in users:
-        users[user] = {"data": {}}
+    users[user] = {"data": {}}
     game_id = str(uuid.uuid4())
     games[game_id] = {"user": user, "last_ping": time.time()}
     return {"game_id": game_id, "user": user}
@@ -68,16 +62,23 @@ async def game_ping(id: str):
         return {"status": "pong", "id": id}
     return {"status": "invalid id"}
 
-# Background cleanup (manual for now)
-@app.get("/cleanup")
-async def cleanup():
-    expired = []
-    now = time.time()
-    for gid, g in list(games.items()):
-        if now - g["last_ping"] > 10:
-            expired.append(gid)
-            del games[gid]
-    return {"expired_games": expired}
+# -------------------------
+# Automatic cleanup task
+# -------------------------
+async def cleanup_task():
+    while True:
+        now = time.time()
+        for gid, g in list(games.items()):
+            if now - g["last_ping"] > 10:
+                username = g["user"]
+                del games[gid]
+                if username in users:
+                    del users[username]
+        await asyncio.sleep(1)  # run every 1 second
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(cleanup_task())
 
 # -------------------------
 if __name__ == "__main__":
