@@ -1,12 +1,11 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 import uvicorn
 import uuid, time
 
 app = FastAPI()
 
 # In-memory storage
-users = {}   # {username: {data: {}}}
+users = {"test": {"data": {}}}   # ensure "test" always exists
 games = {}   # {id: {"user": str, "last_ping": float}}
 
 # -------------------------
@@ -18,7 +17,10 @@ async def user_count():
 
 @app.get("/userlist")
 async def user_list():
-    return {"users": list(users.keys())}
+    # Always include "test"
+    user_list = set(users.keys())
+    user_list.add("test")
+    return {"users": list(user_list)}
 
 @app.post("/user")
 async def update_user(user: str, request: Request):
@@ -57,7 +59,7 @@ async def game_ping(id: str):
         return {"status": "pong", "id": id}
     return {"status": "invalid id"}
 
-# Background cleanup (optional: call periodically)
+# Background cleanup (manual for now)
 @app.get("/cleanup")
 async def cleanup():
     expired = []
