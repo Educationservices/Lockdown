@@ -1,9 +1,18 @@
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import uuid, time
 
 app = FastAPI()
 
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],      # you can restrict this to your game domain if you want
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 # In-memory storage
 users = {"test": {"data": {}}}   # ensure "test" always exists
 games = {}   # {id: {"user": str, "last_ping": float}}
