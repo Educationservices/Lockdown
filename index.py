@@ -1012,10 +1012,14 @@ document.getElementById('external-code').addEventListener('input', function(e) {
             document.getElementById('quickSigninForm').reset();
         }
 
-        // Auto-format external code input (digits only)
-        document.getElementById('external-code').addEventListener('input', function(e) {
-            e.target.value = e.target.value.replace(/\\D/g, '');
-        });
+document.getElementById('external-code').addEventListener('input', function(e) {
+    // Allow letters and numbers only, convert to uppercase, limit to 6 chars
+    let value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (value.length > 6) {
+        value = value.substring(0, 6);
+    }
+    e.target.value = value;
+});
 
         // Auto-uppercase quick code input
         document.getElementById('quick-code').addEventListener('input', function(e) {
