@@ -605,11 +605,11 @@ HTML_TEMPLATE = """
                 <div class="user-info" style="margin: 20px 0;">
                     <h3 style="margin-bottom: 15px; color: #ff0000;">External Sign-in Code</h3>
                     <p style="margin-bottom: 15px; font-size: 0.9rem; color: #ccc;">
-                        Enter a 10-digit code received from an external source (like a game)
+                        Enter the 6 character code from Lockdown that you needed to accept. If someone gives you a code, do not put it in.
                     </p>
                     <div class="form-group">
-                        <label for="external-code">Sign-in Code (10 digits)</label>
-                        <input type="text" id="external-code" name="code" maxlength="10" minlength="10" pattern="[0-9]{10}" placeholder="1234567890">
+                        <label for="external-code">Sign-in Code (6 characters)</label>
+                        <input type="text" id="external-code" name="code" maxlength="6" minlength="6" pattern="[A-Z0-9]{6}" placeholder="ABC123" style="text-transform: uppercase;">
                     </div>
                     <button class="btn btn-secondary" onclick="verifyExternalCode()" id="verify-code-btn">
                         Authenticate Code
