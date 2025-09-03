@@ -53,6 +53,7 @@ async def game_start(user: str):
 @app.websocket("/game/{game_id}")
 async def game_ws(websocket: WebSocket, game_id: str):
     await websocket.accept()
+
     if game_id not in games:
         await websocket.send_json({"error": "invalid id"})
         await websocket.close()
@@ -61,12 +62,23 @@ async def game_ws(websocket: WebSocket, game_id: str):
     games[game_id]["ws"] = websocket
     user = games[game_id]["user"]
 
-    # Send confirmation right after connect
+    # Refresh last_ping right on connect
+    games[game_id]["last_ping"] = time.time()
+
+    # Confirm connection
     await websocket.send_json({"status": "connected", "id": game_id})
 
     try:
         while True:
-            msg = await websocket.receive_json()
+            # Try JSON first
+            try:
+                msg = await websocket.receive_json()
+            except Exception:
+                raw = await websocket.receive_text()
+                msg = {"type": raw}
+
+            print("Got message from", user, ":", msg)
+
             games[game_id]["last_ping"] = time.time()
 
             if msg.get("type") == "ping":
@@ -78,10 +90,12 @@ async def game_ws(websocket: WebSocket, game_id: str):
                 await websocket.send_json({"status": "pos_updated", "x": x, "y": y})
 
     except WebSocketDisconnect:
+        print(f"WebSocket closed for user {user}")
         if game_id in games:
             del games[game_id]
         if user in users:
             del users[user]
+
 
 
 # -------------------------
