@@ -61,6 +61,9 @@ async def game_ws(websocket: WebSocket, game_id: str):
     games[game_id]["ws"] = websocket
     user = games[game_id]["user"]
 
+    # Send confirmation right after connect
+    await websocket.send_json({"status": "connected", "id": game_id})
+
     try:
         while True:
             msg = await websocket.receive_json()
@@ -75,11 +78,11 @@ async def game_ws(websocket: WebSocket, game_id: str):
                 await websocket.send_json({"status": "pos_updated", "x": x, "y": y})
 
     except WebSocketDisconnect:
-        # Cleanup when client disconnects
         if game_id in games:
             del games[game_id]
         if user in users:
             del users[user]
+
 
 # -------------------------
 # Auto cleanup expired sessions
